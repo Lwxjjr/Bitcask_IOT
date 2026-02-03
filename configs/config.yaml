@@ -1,0 +1,29 @@
+# Bitcask IoT Storage Engine Configuration
+
+# OPC UA Configuration
+opc:
+  endpoint: "opc.tcp://localhost:53530"
+  node_ids:
+    - "ns=3;i=1001"
+    - "ns=3;i=1002"
+  subscription_interval: "1s"
+
+# Storage Configuration
+storage:
+  dir_path: "/tmp/bitcask-iot"
+  data_file_size: 512MB
+  sync_write: false
+  rotation_interval: "1h"
+
+# Logger Configuration
+logger:
+  level: "info"
+  output: "./logs/bitcask-iot.log"
+  max_size: 100
+  max_backups: 3
+  max_age: 7
+
+# HTTP Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
