@@ -1,250 +1,265 @@
-# 项目上下文文档 (AGENTS.md)
+# Bitcask IoT 存储引擎 - 项目上下文文档
 
 ## 项目概述
 
-这是一个基于 **Bitcask 模型** 的嵌入式时序存储引擎，专为工业物联网 (IIoT) 边缘计算场景设计。项目采用 Go 语言开发，旨在实现高性能的时序数据采集、存储和查询，支持 OPC UA 协议对接、时间窗口管理、数据降采样等核心功能。
+Bitcask IoT 是一个基于 LSM-Tree 变体 (TSM) 的嵌入式时序存储引擎，专为 IoT 场景的高频写入和范围查询优化。该项目采用内存缓冲 (Write Buffer) + 数据分块 (Chunking) + 稀疏索引 (Sparse Index) 的架构设计。
 
-**项目状态**: 设计规划阶段（尚未开始代码实现）
+### 核心特性
 
-**核心目标**:
-- 在边缘设备上实现高吞吐量的时序数据存储（目标 10w+ TPS）
-- 支持 OPC UA 工业协议的数据订阅与采集
-- 提供灵活的时间窗口管理和数据归档能力
-- 实现数据降采样算法，降低边缘端带宽压力
-- 提供命令行工具和 HTTP API 进行数据查询和运维管理
+- **ID 映射系统**: 将字符串形式的 SensorID 映射为 `uint32`，以优化存储空间和内存使用
+- **写路径优化**: 通过 WAL + Buffer + Compression 的三级缓冲机制实现高效写入
+- **压缩存储**: 使用 Delta-of-Delta (时间戳) 和 XOR/Snappy (数值) 编码进行数据压缩
+- **稀疏索引查询**: 通过内存中的 BlockMeta 索引快速定位数据块，支持高效的范围查询
+- **自动文件轮转**: 按时间周期或大小切分 Segment 文件，支持 TTL 过期清理
+- **崩溃恢复**: 通过 WAL 重放机制保证数据持久性
 
-## 项目架构
+### 架构组件
 
-### 系统分层架构
-
-```
-外部配置 (Config)
-    ↓
-pkg/config (Viper Loader)
-    ↓
-+---------------------+       +---------------------------+       +---------------------+
-|  工业现场 / 模拟源  |       |  Edge Gateway (Go App)    |       |  运维 / 调试 CLI    |
-| (Prosys Simulation) |       |                           |       | (kv-cli)            |
-+----------+----------+       |  [Logger] (pkg/logger)    |       +----------+----------+
-           |                  |  记录系统运行状态/错误    |                  ^
-           | [1] Subscribe    +---------------------------+                  | [5] HTTP Query
-           v                               |                                 |
-+---------------------+       +------------+--------------+       +----------+----------+
-|  [Ingestion Layer]  |       |  [Service Layer]          |       |  [Test Layer]       |
-|  internal/collector |-----> |  internal/service         | <---- |  test/benchmark     |
-|  (OPC UA Client)    | [2]   |  (HTTP API & Algo)        |       |  (压测脚本)         |
-+---------------------+ Put   +------------+--------------+       +---------------------+
-                                           | [3] Range Scan
-                                           v
-                      +------------------------------------------+
-                      |  [Storage Engine Layer] (internal/engine)|
-                      |  - Index: BTree (Key=ID+Time)            |
-                      |  - Storage: Append-Only Files            |
-                      +------------------------------------------+
-```
-
-### 目录结构规划
-
-```
-bitcask-iot/
-├── cmd/
-│   ├── server/               # 边缘网关主程序入口
-│   └── cli/                  # 命令行运维工具
-│
-├── configs/                  # 配置文件目录
-│   └── config.yaml           # OPC UA 地址、端口、存储路径等配置
-│
-├── internal/                 # 核心私有代码
-│   ├── collector/            # 采集层：OPC UA 订阅与数据转换
-│   ├── data/                 # 协议层：LogRecord 定义与编解码
-│   ├── engine/               # 引擎层：DB 核心、Merge 逻辑
-│   ├── index/                # 索引层：BTree 实现与 Iterator 接口
-│   ├── storage/              # IO层：文件读写管理
-│   └── service/              # 业务层：降采样算法与 HTTP Handler
-│
-├── pkg/                      # 公共库代码
-│   ├── config/               # 配置管理：Viper 加载配置
-│   ├── logger/               # 日志工具：Zap + 日志轮转
-│   └── utils/                # 通用工具：时间转换、文件操作辅助
-│
-├── test/                     # 测试相关
-│   ├── benchmark/            # 基准测试：压测脚本
-│   └── mock/                 # Mock 数据生成
-│
-├── go.mod
-└── README.md
-```
-
-## 核心功能模块
-
-### 1. 时序 Key 设计
-- **格式**: `SensorID (String) + Timestamp (BigEndian Uint64)`
-- **目的**: 确保相同 SensorID 的记录在 BTree 索引中按时间紧凑排列
-- **编码**: 使用 `binary.BigEndian` 保证字节序比较正确
-
-### 2. 时间窗口切分
-- **策略**: 按时间段切分数据文件（非传统按文件大小切分）
-- **配置项**: `DataFileRotationInterval` (如 1 小时)
-- **优势**: 便于按时间归档和清理旧数据，无需遍历记录
-- **文件命名**: `data-{Timestamp}.vlog`
-
-### 3. 数据降采样
-- **接口**: `QueryRange(start, end, maxPoints)`
-- **算法流程**:
-  1. Seek 定位起始点
-  2. Scan 扫描时间范围
-  3. Buffer 缓存原始数据点
-  4. Aggregate 聚合（LTTB 或 Simple Average）
-  5. Return 返回特征点
-- **应用**: 解决边缘端带宽瓶颈，"写入全量，读取特征"
-
-### 4. 索引层适配
-- **实现**: 使用 `google/btree` 替代原生 Map
-- **接口方法**:
-  - `Put(key, pos)`
-  - `Get(key)`
-  - `Iterator(reverse bool) IndexIterator`
-- **能力**: 支持 `Ascend`/`Descend` 遍历，是降采样的基础
+1. **Ingestion Layer** (`internal/collector`): OPC UA 数据采集客户端
+2. **Engine Layer** (`internal/engine`): 数据库统一入口，协调各层操作
+3. **Index Layer** (`internal/index`): 内存索引管理，维护 SensorID -> Series 映射
+4. **Storage Layer** (`internal/storage`): 磁盘文件操作，管理 Segment 文件读写
+5. **Query Layer** (`internal/query`): 查询执行器，支持迭代器和查询规划
+6. **Service Layer** (`internal/service`): HTTP/RPC 接入层
 
 ## 技术栈
 
 ### 核心语言
-- **Go**: 1.19+ (利用泛型优化部分逻辑)
+- **Go 1.23+**: 利用泛型处理不同类型的数值点
 
-### 第三方依赖
+### 关键依赖库 (待集成)
 
-| 库 | 用途 | 核心功能 |
-|---|---|---|
-| `github.com/gopcua/opcua` | OPC UA 协议对接 | 连接 Prosys Server、订阅模式、解析 Variant 数据 |
-| `github.com/google/btree` | 内存索引 | 有序索引、支持范围查询、降采样基础 |
-| `github.com/spf13/cobra` | 命令行工具 | CLI 参数解析、子命令管理 |
-| `github.com/gin-gonic/gin` | HTTP 服务 | 轻量级 API 框架，适合嵌入式环境 |
+- **压缩**: `github.com/golang/snappy` 或 `klauspost/compress/zstd` - Data Block 压缩
+- **工业协议**: `github.com/gopcua/opcua` - OPC UA 数据采集
+- **CLI 框架**: `github.com/spf13/cobra` - 命令行工具
+- **配置管理**: `github.com/spf13/viper` - YAML 配置文件管理
+- **Web 服务**: `github.com/gin-gonic/gin` - HTTP API 服务
+- **日志**: `github.com/uber-go/zap` - 结构化日志
 
-### 标准库使用
-- `encoding/binary`: Key 和 LogRecord 的 BigEndian/Varint 序列化
-- `hash/crc32`: LogRecord 数据完整性校验 (Crash Safety)
-- `sync`: 使用 `sync.RWMutex` 保证并发安全
-- `golang.org/x/exp/mmap` (可选): 内存映射读取，提升读性能
+### 标准库深度使用
+- `encoding/binary`: Block Header 的 BigEndian 编码
+- `os` & `io`: Segment 文件的 Seek, ReadAt, Append 操作
+- `sync/atomic`: 无锁指标统计
+- `sort`: 内存索引二分查找
 
-### 配置与日志
-- **配置管理**: `spf13/viper`
-- **日志**: `uber-go/zap` (高性能) + `lumberjack` (日志切割)
-  - 区分 INFO (正常采集) 和 ERROR (OPC 断连、CRC 校验失败)
-  - 日志必须包含时间戳和文件定位
+## 项目结构
+
+```
+bitcask_iot/
+├── cmd/
+│   ├── server/main.go       # 服务入口，组装 Engine、Service、HTTP
+│   └── cli/main.go          # 运维与调试 CLI 工具
+│
+├── configs/
+│   └── config.yaml          # 配置文件 (OPC UA、存储、日志、服务器)
+│
+├── internal/                # 核心业务逻辑 (不可被外部导入)
+│   ├── collector/           # OPC UA 数据采集客户端
+│   ├── engine/              # 数据库协调层 (Put/Get/Close 接口、WAL、Options)
+│   ├── index/               # 内存索引层 (Series、ID 映射、BlockMeta)
+│   ├── storage/             # 物理存储层 (Block 压缩、文件管理、二进制协议)
+│   └── service/             # HTTP/RPC Handler
+│
+├── pkg/                     # 公共库 (可被外部导入)
+│   ├── config/              # Viper 配置加载
+│   ├── logger/              # Zap 日志封装
+│   └── utils/               # 通用工具函数
+│
+├── test/
+│   ├── benchmark/           # 性能基准测试
+│   └── mock/                # 测试模拟数据
+│
+├── go.mod                   # Go 模块定义
+└── go.sum                   # 依赖版本锁定
+```
 
 ## 构建与运行
 
-### 初始化命令
-```bash
-# 初始化模块
-go mod init github.com/yourname/bitcask-iot
+### 前置依赖
 
-# 下载核心依赖
-go get github.com/gopcua/opcua
-go get github.com/google/btree
+```bash
+# 安装 Go 1.23+
+# 项目使用 Go Modules，无需额外设置 GOPATH
+```
+
+### 安装依赖
+
+```bash
+# 初始化依赖 (首次运行)
+go mod download
+
+# 安装关键依赖库
 go get github.com/spf13/cobra
-go get github.com/gin-gonic/gin
 go get github.com/spf13/viper
-go get go.uber.org/zap
-go get gopkg.in/natefinch/lumberjack.v2
+go get github.com/gin-gonic/gin
+go get github.com/uber-go/zap
+go get github.com/gopcua/opcua
+go get github.com/golang/snappy
 ```
 
-### 构建命令（待实现）
-```bash
-# 构建边缘网关服务
-go build -o bin/server cmd/server/main.go
+### 构建项目
 
-# 构建命令行工具
-go build -o bin/cli cmd/cli/main.go
+```bash
+# 构建 server
+go build -o bin/server ./cmd/server
+
+# 构建 cli
+go build -o bin/cli ./cmd/cli
+
+# 或使用 make (如果存在 Makefile)
+make build
 ```
 
-### 运行命令（待实现）
-```bash
-# 启动边缘网关
-./bin/server -config configs/config.yaml
+### 运行服务
 
-# 使用 CLI 查询数据
-./bin/cli query --sensor-id "sensor1" --start 1640995200 --end 1641081600 --downsample 100
+```bash
+# 使用默认配置运行
+./bin/server
+
+# 指定配置文件
+./bin/server -c configs/config.yaml
 ```
 
-### 测试命令（待实现）
+### 运行测试
+
 ```bash
-# 运行单元测试
+# 运行所有测试
 go test ./...
 
+# 运行特定包的测试
+go test ./internal/engine
+
 # 运行基准测试
-go test -bench=. -benchmem ./test/benchmark/
+go test -bench=. ./test/benchmark
+
+# 带覆盖率测试
+go test -cover ./...
 ```
 
-## 配置文件
+### 运行 CLI 工具
 
-### config.yaml 示例
-```yaml
-opc:
-  endpoint: "opc.tcp://localhost:53530"
-  node_ids: ["ns=3;i=1001", "ns=3;i=1002"]
+```bash
+# 查看帮助
+./bin/cli --help
 
-storage:
-  dir_path: "/tmp/bitcask-iot"
-  data_file_size: 512MB
-  sync_write: false
-  rotation_interval: "1h"  # 时间窗口切分间隔
-
-logger:
-  level: "info"
-  output: "./logs/bitcask-iot.log"
-  max_size: 100
-  max_backups: 3
-  max_age: 7
+# 查询数据
+./bin/cli query --sensor "Temperature" --start "2024-01-01" --end "2024-01-02"
 ```
 
-## 开发约定
+## 开发规范
 
-### 编码规范
-- 严格遵循 Go 标准工程结构
-- 通用工具放入 `pkg`，核心业务逻辑放入 `internal`
-- 使用 `sync.RWMutex` 保证 Bitcask 引擎的并发安全
-- 所有 Key 编码使用 BigEndian 字节序
+### 代码风格
 
-### 测试实践
-- 在 `test/benchmark` 目录编写性能测试脚本
-- 测试场景包括：
-  - Write Benchmark: 持续写入 100 万条 1KB 数据，计算 IOPS
-  - Range Benchmark: 读取过去 1 小时数据，对比开启/关闭降采样的耗时差异
+- 遵循 [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
+- 使用 `gofmt` 格式化代码
+- 函数命名：公共函数使用 PascalCase，私有函数使用 camelCase
+- 接口命名：通常以 "er" 结尾 (如 Reader, Writer)
+
+### 错误处理
+
+- 始终处理返回的 error
+- 使用 `errors.Is()` 和 `errors.As()` 进行错误检查
+- 对于可恢复的错误，记录日志并继续
+- 对于严重错误，返回给调用者处理
+
+### 并发安全
+
+- 存储引擎内部操作需保证并发安全
+- 使用 `sync.RWMutex` 保护共享数据结构
+- 使用 `sync/atomic` 进行无锁指标统计
+- 避免在持有锁时进行 I/O 操作
+
+### 测试要求
+
+- 每个核心包应有单元测试
+- 测试文件命名为 `*_test.go`
+- 使用 `table-driven tests` 模式
+- 关键路径必须有测试覆盖
+- 集成测试放在 `test/` 目录
 
 ### 配置管理
-- 不要在代码中硬编码路径
-- 使用 `configs/config.yaml` 统一管理配置
-- 支持运行时配置热加载（可选）
+
+- 所有配置项定义在 `configs/config.yaml`
+- 使用 Viper 加载配置
+- 支持环境变量覆盖配置项
+- 敏感信息使用环境变量，不写入配置文件
 
 ### 日志规范
-- INFO 级别：正常采集流程
-- ERROR 级别：OPC 断连、CRC 校验失败等异常
-- 日志必须包含时间戳和文件定位信息
 
-## 当前项目状态
+- 使用 Zap 结构化日志
+- 日志级别：Debug (开发)、Info (生产)、Warn、Error、Fatal
+- 关键操作必须记录日志 (如写入、查询、错误)
+- 使用结构化字段记录上下文信息 (如 `sensorID`, `timestamp`, `count`)
 
-**状态**: 规划设计阶段
+## 核心文件说明
 
-**已完成**:
-- ✅ 系统架构设计文档
-- ✅ 核心功能设计文档
-- ✅ 技术栈选型文档
+### 文档文件
 
-**待实现**:
-- ⏳ 项目初始化（go mod init）
-- ⏳ 目录结构创建
-- ⏳ 核心模块代码实现
-- ⏳ 配置文件创建
-- ⏳ 测试脚本编写
-- ⏳ README 文档编写
+- `01_architecture_structure.md`: 架构设计与目录结构指南
+- `02_core_features.md`: 核心功能实现指南 (ID 映射、压缩存储、查询)
+- `03_tech_stack.md`: 技术栈与依赖管理指南
 
-## 文档说明
+### 核心模块
 
-本目录包含以下设计文档：
+- `internal/engine/engine.go`: 实现数据库核心接口 (Put, Get, Close)
+- `internal/index/series.go`: Series 数据结构，包含 ActiveBuffer 和 BlockMeta
+- `internal/storage/log_record.go`: 磁盘二进制协议定义
+- `internal/storage/file_manager.go`: Segment 文件管理
 
-1. **01_architecture_structure.md**: 详细的系统架构设计和目录结构规范
-2. **02_core_features.md**: 核心功能实现指南（时间窗口、降采样、索引适配）
-3. **03_tech_stack.md**: 技术栈选型和第三方依赖说明
+## 开发路线图
 
-这些文档为项目的实现提供了完整的技术指导和规范。
+当前项目处于初始化阶段，需要从底层实现：
+
+1. **存储层实现**
+   - 实现 `log_record.go` 二进制协议
+   - 实现 `block.go` 压缩/解压逻辑
+   - 实现 `file_manager.go` 文件操作
+
+2. **索引层实现**
+   - 实现 `series.go` 内存缓冲和索引
+   - 实现 `id_map.go` ID 映射系统
+
+3. **引擎层实现**
+   - 实现 `engine.go` 核心接口
+   - 实现 `wal.go` 预写日志
+   - 实现崩溃恢复逻辑
+
+4. **数据采集层实现**
+   - 实现 OPC UA 客户端连接
+   - 实现数据订阅和采集
+
+5. **服务层实现**
+   - 实现 HTTP API 接口
+   - 实现查询和写入端点
+
+## 配置说明
+
+### OPC UA 配置
+- `endpoint`: OPC UA 服务器地址
+- `node_ids`: 订阅的节点 ID 列表
+- `subscription_interval`: 订阅刷新间隔
+
+### 存储配置
+- `dir_path`: 数据存储目录
+- `data_file_size`: Segment 文件大小限制
+- `sync_write`: 是否同步写入 (安全 vs 性能)
+- `rotation_interval`: 文件轮转间隔
+
+### 日志配置
+- `level`: 日志级别
+- `output`: 日志输出路径
+- `max_size`: 单个日志文件最大大小 (MB)
+- `max_backups`: 保留的日志备份数量
+- `max_age`: 日志保留天数
+
+### HTTP 服务器配置
+- `host`: 监听地址
+- `port`: 监听端口
+
+## 重要提示
+
+1. **当前状态**: 项目刚完成目录结构初始化，核心功能待实现
+2. **优先级**: 从存储层开始，自底向上实现
+3. **性能目标**: 支持每秒 10,000+ 点的写入吞吐量
+4. **兼容性**: 支持 Linux 环境 (开发/测试)
+5. **文档**: 架构、特性、技术栈文档已完备，可作为开发参考
