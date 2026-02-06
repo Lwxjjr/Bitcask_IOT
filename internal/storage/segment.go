@@ -8,6 +8,7 @@ import (
 // BlockMeta 是内存和磁盘的纽带，存内存中
 // 它是 Storage 层告诉 Index 层：“刚才那个块我写好了，位置在这里”
 type BlockMeta struct {
+	FileID  uint32 // 属于哪个文件
 	MinTime int64
 	MaxTime int64
 	Offset  int64
@@ -15,13 +16,14 @@ type BlockMeta struct {
 	Count   uint16 // 数据点数：用于 Count/Downsample 预估
 }
 
-// ToMeta 根据 Block 生成对应的元数据
-func (b *Block) ToMeta(offset int64, size uint32) *BlockMeta {
+// toMeta 根据 Block 生成对应的元数据
+func (b *Block) toMeta(fileID uint32, offset int64, size uint32) *BlockMeta {
 	if len(b.Points) == 0 {
 		return nil
 	}
 
 	return &BlockMeta{
+		FileID:  fileID,
 		MinTime: b.Points[0].Time,
 		MaxTime: b.Points[len(b.Points)-1].Time,
 		Offset:  offset,
@@ -78,7 +80,21 @@ func (s *Segment) WriteBlock(block *Block) (*BlockMeta, error) {
 
 	s.WriteOffset += int64(size)
 
-	return block.ToMeta(offset, size), nil
+	return block.toMeta(s.ID, offset, size), nil
+}
+
+// ReadBlock 根据元数据从文件中读取并解析 Block
+func (s *Segment) ReadBlock(meta *BlockMeta) (*Block, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data := make([]byte, meta.Size)
+	_, err := s.File.ReadAt(data, meta.Offset)
+	if err != nil {
+		return nil, err
+	}
+
+	return DecodeBlock(data)
 }
 
 // Close 关闭文件

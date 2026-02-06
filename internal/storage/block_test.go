@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -48,14 +49,18 @@ func TestBlock_ToMeta(t *testing.T) {
 		Points:   points,
 	}
 
+	fileID := uint32(10)
 	offset := int64(100)
 	size := uint32(50)
-	meta := block.ToMeta(offset, size)
+	meta := block.toMeta(fileID, offset, size)
 
 	if meta == nil {
 		t.Fatal("ToMeta returned nil")
 	}
 
+	if meta.FileID != fileID {
+		t.Errorf("Expected FileID %d, got %d", fileID, meta.FileID)
+	}
 	if meta.MinTime != 1000 {
 		t.Errorf("Expected MinTime 1000, got %d", meta.MinTime)
 	}
@@ -73,14 +78,41 @@ func TestBlock_ToMeta(t *testing.T) {
 	}
 }
 
-func TestBlock_ToMeta_Empty(t *testing.T) {
+func TestSegment_WriteRead(t *testing.T) {
+	tmpFile := "test_segment.seg"
+	defer os.Remove(tmpFile)
+
+	seg, err := NewSegment(tmpFile, 1)
+	if err != nil {
+		t.Fatalf("Failed to create segment: %v", err)
+	}
+	defer seg.Close()
+
 	block := &Block{
 		SensorID: 1,
-		Points:   []Point{},
+		Points: []Point{
+			{Time: 1000, Value: 1.1},
+			{Time: 2000, Value: 2.2},
+		},
 	}
 
-	meta := block.ToMeta(0, 0)
-	if meta != nil {
-		t.Error("Expected nil meta for empty block")
+	// Test Write
+	meta, err := seg.WriteBlock(block)
+	if err != nil {
+		t.Fatalf("WriteBlock failed: %v", err)
+	}
+
+	if meta.Offset != 0 {
+		t.Errorf("Expected offset 0, got %d", meta.Offset)
+	}
+
+	// Test Read
+	readBlock, err := seg.ReadBlock(meta)
+	if err != nil {
+		t.Fatalf("ReadBlock failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(block, readBlock) {
+		t.Errorf("Read block does not match original")
 	}
 }
