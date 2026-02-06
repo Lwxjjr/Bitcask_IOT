@@ -1,5 +1,10 @@
 package storage
 
+import (
+	"bytes"
+	"encoding/gob"
+)
+
 // Point 是最基础的时序数据单元 (16 Bytes)
 type Point struct {
 	Time  int64   // Unix 毫秒/秒级时间戳
@@ -13,12 +18,23 @@ type Block struct {
 	Points   []Point // 实际的数据列表 (Go Slice 自带长度，不用额外存 Count)
 }
 
-// BlockMeta 是内存和磁盘的纽带，存内存中
-// 它是 Storage 层告诉 Index 层：“刚才那个块我写好了，位置在这里”
-type BlockMeta struct {
-	MinTime int64  // 用于二分查找：范围开始
-	MaxTime int64  // 用于二分查找：范围结束
-	Offset  int64  // 文件偏移量：Seek(Offset)
-	Size    uint32 // 数据长度：Read(Size)
-	Count   uint16 // 数据点数：用于 Count/Downsample 预估
+// Encode 将 Block 序列化为字节数组
+func (b *Block) Encode() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(b); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// DecodeBlock 将字节数组反序列化为 Block
+func DecodeBlock(data []byte) (*Block, error) {
+	var block Block
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&block); err != nil {
+		return nil, err
+	}
+	return &block, nil
 }
