@@ -1,9 +1,21 @@
 package storage
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 )
+
+const (
+	SegmentFileNamePrefix = "seg-"
+	SegmentFileNameSuffix = ".vlog"
+)
+
+// GetSegmentPath 根据目录和 ID 生成完整的段文件路径
+func GetSegmentPath(dir string, id uint32) string {
+	return filepath.Join(dir, fmt.Sprintf("%s%06d%s", SegmentFileNamePrefix, id, SegmentFileNameSuffix))
+}
 
 // BlockMeta 是内存和磁盘的纽带，存内存中
 // 它是 Storage 层告诉 Index 层：“刚才那个块我写好了，位置在这里”
