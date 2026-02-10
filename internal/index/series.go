@@ -6,6 +6,9 @@ import (
 	"github.com/bitcask-iot/engine/internal/storage"
 )
 
+// BlockMaxPoints 每个 Block 最多包含的数据点数
+const BlockMaxPoints = 1000
+
 // Series 代表一个传感器的时间线
 // 它负责管理热数据（Buffer）和冷数据索引（Blocks）
 type Series struct {
@@ -30,11 +33,10 @@ func (s *Series) Append(point storage.Point) {
 }
 
 // ShouldFlush 判断是否需要将内存数据刷入磁盘
-// 这里的阈值可以根据配置文件动态调整，目前硬编码为 1000
 func (s *Series) ShouldFlush() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.ActiveBuffer) >= 1000
+	return len(s.ActiveBuffer) >= BlockMaxPoints
 }
 
 // Flush 将内存中的 ActiveBuffer 写入指定的 Segment，并清空缓冲区

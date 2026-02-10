@@ -9,6 +9,9 @@ import (
 	"sync"
 )
 
+// SegmentMaxSize 单个 Segment 的最大大小（256MB）
+const SegmentMaxSize = 256 * 1024 * 1024
+
 // Manager 负责管理多个数据段文件
 type Manager struct {
 	mu            sync.RWMutex
@@ -19,7 +22,11 @@ type Manager struct {
 }
 
 // NewManager 初始化并加载现有的段文件
+// maxSize 为 0 时使用默认值 SegmentMaxSize
 func NewManager(dirPath string, maxSize int64) (*Manager, error) {
+	if maxSize == 0 {
+		maxSize = SegmentMaxSize
+	}
 	mgr := &Manager{
 		dirPath:       dirPath,
 		olderSegments: make(map[uint32]*Segment),
