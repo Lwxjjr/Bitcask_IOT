@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestSegmentManager_Rotate(t *testing.T) {
+func TestManager_Rotate(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "segment-mgr-test")
 	defer os.RemoveAll(dir)
 
 	// 设置极小的 maxSize 以触发轮转 (100 字节)
-	mgr, err := NewSegmentManager(dir, 100)
+	mgr, err := NewManager(dir, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,12 +52,12 @@ func TestSegmentManager_Rotate(t *testing.T) {
 	}
 }
 
-func TestSegmentManager_Reload(t *testing.T) {
+func TestManager_Reload(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "segment-mgr-reload")
 	defer os.RemoveAll(dir)
 
 	// 1. 第一轮写入
-	mgr1, _ := NewSegmentManager(dir, 1024*1024)
+	mgr1, _ := NewManager(dir, 1024*1024)
 	b1 := &Block{SensorID: 99, Points: []Point{{Time: 123, Value: 45.6}}}
 	mgr1.WriteBlock(b1)
 	mgr1.Close()
@@ -69,7 +69,7 @@ func TestSegmentManager_Reload(t *testing.T) {
 	}
 
 	// 3. 重新加载
-	mgr2, err := NewSegmentManager(dir, 1024*1024)
+	mgr2, err := NewManager(dir, 1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}

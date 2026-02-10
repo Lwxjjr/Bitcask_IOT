@@ -9,8 +9,8 @@ import (
 	"sync"
 )
 
-// SegmentManager 负责管理多个数据段文件
-type SegmentManager struct {
+// Manager 负责管理多个数据段文件
+type Manager struct {
 	mu            sync.RWMutex
 	dirPath       string
 	activeSegment *Segment
@@ -18,9 +18,9 @@ type SegmentManager struct {
 	maxSize       int64 // 单个 Segment 的最大大小，超过则轮转
 }
 
-// NewSegmentManager 初始化并加载现有的段文件
-func NewSegmentManager(dirPath string, maxSize int64) (*SegmentManager, error) {
-	mgr := &SegmentManager{
+// NewManager 初始化并加载现有的段文件
+func NewManager(dirPath string, maxSize int64) (*Manager, error) {
+	mgr := &Manager{
 		dirPath:       dirPath,
 		olderSegments: make(map[uint32]*Segment),
 		maxSize:       maxSize,
@@ -34,7 +34,7 @@ func NewSegmentManager(dirPath string, maxSize int64) (*SegmentManager, error) {
 }
 
 // loadSegments 扫描目录并加载已有的文件
-func (m *SegmentManager) loadSegments() error {
+func (m *Manager) loadSegments() error {
 	files, err := os.ReadDir(m.dirPath)
 	if err != nil {
 		return err
@@ -81,7 +81,7 @@ func (m *SegmentManager) loadSegments() error {
 }
 
 // WriteBlock 自动选择 Active Segment 写入，并处理轮转
-func (m *SegmentManager) WriteBlock(block *Block) (*BlockMeta, error) {
+func (m *Manager) WriteBlock(block *Block) (*BlockMeta, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -96,7 +96,7 @@ func (m *SegmentManager) WriteBlock(block *Block) (*BlockMeta, error) {
 }
 
 // ReadBlock 根据 FileID 找到对应的 Segment 并读取
-func (m *SegmentManager) ReadBlock(meta *BlockMeta) (*Block, error) {
+func (m *Manager) ReadBlock(meta *BlockMeta) (*Block, error) {
 	m.mu.RLock()
 	var seg *Segment
 	if m.activeSegment != nil && m.activeSegment.ID == meta.FileID {
@@ -114,7 +114,7 @@ func (m *SegmentManager) ReadBlock(meta *BlockMeta) (*Block, error) {
 }
 
 // rotate 关闭当前活跃段，开启一个新段
-func (m *SegmentManager) rotate(nextID uint32) error {
+func (m *Manager) rotate(nextID uint32) error {
 	if m.activeSegment != nil {
 		m.olderSegments[m.activeSegment.ID] = m.activeSegment
 	}
@@ -130,7 +130,7 @@ func (m *SegmentManager) rotate(nextID uint32) error {
 }
 
 // Close 关闭所有段文件
-func (m *SegmentManager) Close() error {
+func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

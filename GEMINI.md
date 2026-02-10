@@ -320,7 +320,7 @@ Step 3: Index Update (更新索引)
      │
      ├─ Series.Flush()
      │   ├─ 1. 打包 Block
-     │   ├─ 2. SegmentManager.WriteBlock(block)
+     │   ├─ 2. Manager.WriteBlock(block)
      │   │   ├─ 检查 Active Segment 是否写满
      │   │   ├─ 写满 → 简单关闭旧文件，创建新文件
      │   │   └─ Segment.WriteBlock(block)
