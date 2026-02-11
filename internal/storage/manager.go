@@ -22,7 +22,6 @@ type Manager struct {
 }
 
 // NewManager 初始化并加载现有的段文件
-// maxSize 为 0 时使用默认值 SegmentMaxSize
 func NewManager(dirPath string, maxSize int64) (*Manager, error) {
 	if maxSize == 0 {
 		maxSize = SegmentMaxSize
@@ -40,7 +39,7 @@ func NewManager(dirPath string, maxSize int64) (*Manager, error) {
 	return mgr, nil
 }
 
-// loadSegments 扫描目录并加载已有的文件
+// loadSegments 扫描目录并加载已有的文件 (逻辑保持不变)
 func (m *Manager) loadSegments() error {
 	files, err := os.ReadDir(m.dirPath)
 	if err != nil {
@@ -59,13 +58,11 @@ func (m *Manager) loadSegments() error {
 	}
 
 	if len(ids) == 0 {
-		// 如果没有文件，创建一个新的 Active Segment
 		return m.rotate(0)
 	}
 
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	// 加载所有旧文件为只读模式（逻辑上）
 	for i := 0; i < len(ids)-1; i++ {
 		path := GetSegmentPath(m.dirPath, ids[i])
 		seg, err := NewSegment(path, ids[i])
@@ -75,7 +72,6 @@ func (m *Manager) loadSegments() error {
 		m.olderSegments[ids[i]] = seg
 	}
 
-	// 最后一个作为 Active Segment 加载
 	lastID := ids[len(ids)-1]
 	path := GetSegmentPath(m.dirPath, lastID)
 	seg, err := NewSegment(path, lastID)
@@ -87,22 +83,46 @@ func (m *Manager) loadSegments() error {
 	return nil
 }
 
-// WriteBlock 自动选择 Active Segment 写入，并处理轮转
+// WriteBlock 接收业务块，编码并处理文件轮转，然后写入底层
 func (m *Manager) WriteBlock(block *Block) (*BlockMeta, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// 1. 🚀 锁外操作：执行 CPU 密集的序列化
+	data, err := block.Encode()
+	if err != nil {
+		return nil, err
+	}
+	dataSize := int64(len(data))
 
-	// 检查是否需要轮转
-	if m.activeSegment.WriteOffset >= m.maxSize {
-		if err := m.rotate(m.activeSegment.ID + 1); err != nil {
-			return nil, err
+	// 2. ⚡️ 获取当前活跃分片的指针
+	m.mu.RLock()
+	activeSeg := m.activeSegment
+	m.mu.RUnlock()
+
+	// 3. 🎯 预判轮转 (预测：当前大小 + 新数据大小 > 最大限制)
+	if activeSeg.Size()+dataSize > m.maxSize {
+		m.mu.Lock()
+		// Double-Check：防止其他并发协程已经完成了轮转
+		if m.activeSegment == activeSeg {
+			if err := m.rotate(activeSeg.ID + 1); err != nil {
+				m.mu.Unlock()
+				return nil, err
+			}
 		}
+		// 指向最新的 Segment
+		activeSeg = m.activeSegment
+		m.mu.Unlock()
 	}
 
-	return m.activeSegment.WriteBlock(block)
+	// 4. 💾 纯物理写入 (Manager 不加锁，锁在 activeSeg 内部)
+	offset, err := activeSeg.Write(data)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. 🧾 组装元数据返回给上层
+	return block.toMeta(activeSeg.ID, offset, uint32(dataSize)), nil
 }
 
-// ReadBlock 根据 FileID 找到对应的 Segment 并读取
+// ReadBlock 根据 FileID 找到对应的 Segment 并读取解包
 func (m *Manager) ReadBlock(meta *BlockMeta) (*Block, error) {
 	m.mu.RLock()
 	var seg *Segment
@@ -117,12 +137,23 @@ func (m *Manager) ReadBlock(meta *BlockMeta) (*Block, error) {
 		return nil, fmt.Errorf("segment %d not found", meta.FileID)
 	}
 
-	return seg.ReadBlock(meta)
+	// 调用底层物理读取
+	data, err := seg.ReadAt(meta.Size, meta.Offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// 锁外执行反序列化 (依赖 block.go 中的 DecodeBlock)
+	return DecodeBlock(data)
 }
 
-// rotate 关闭当前活跃段，开启一个新段
+// rotate 封存当前活跃段，开启一个新段
 func (m *Manager) rotate(nextID uint32) error {
 	if m.activeSegment != nil {
+		// 🌟 关键保命动作：退役前必须强制刷盘！
+		if err := m.activeSegment.Sync(); err != nil {
+			return fmt.Errorf("failed to sync segment %d: %v", m.activeSegment.ID, err)
+		}
 		m.olderSegments[m.activeSegment.ID] = m.activeSegment
 	}
 
@@ -142,6 +173,8 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 
 	if m.activeSegment != nil {
+		// 关闭前也要刷一次盘
+		m.activeSegment.Sync()
 		if err := m.activeSegment.Close(); err != nil {
 			return err
 		}

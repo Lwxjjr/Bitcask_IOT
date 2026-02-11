@@ -17,34 +17,7 @@ func GetSegmentPath(dir string, id uint32) string {
 	return filepath.Join(dir, fmt.Sprintf("%s%06d%s", SegmentFileNamePrefix, id, SegmentFileNameSuffix))
 }
 
-// BlockMeta 是内存和磁盘的纽带，存内存中
-// 它是 Storage 层告诉 Index 层：“刚才那个块我写好了，位置在这里”
-type BlockMeta struct {
-	FileID  uint32 // 属于哪个文件
-	MinTime int64
-	MaxTime int64
-	Offset  int64
-	Size    uint32
-	Count   uint16 // 数据点数：用于 Count/Downsample 预估
-}
-
-// toMeta 根据 Block 生成对应的元数据
-func (b *Block) toMeta(fileID uint32, offset int64, size uint32) *BlockMeta {
-	if len(b.Points) == 0 {
-		return nil
-	}
-
-	return &BlockMeta{
-		FileID:  fileID,
-		MinTime: b.Points[0].Time,
-		MaxTime: b.Points[len(b.Points)-1].Time,
-		Offset:  offset,
-		Size:    size,
-		Count:   uint16(len(b.Points)),
-	}
-}
-
-// Segment 代表一个物理数据文件
+// Segment 代表一个纯粹的物理数据文件
 type Segment struct {
 	mu          sync.RWMutex
 	ID          uint32
@@ -73,40 +46,47 @@ func NewSegment(path string, id uint32) (*Segment, error) {
 	}, nil
 }
 
-// WriteBlock 将一个 Block 写入 Segment 并返回其元数据
-func (s *Segment) WriteBlock(block *Block) (*BlockMeta, error) {
+// Write 极其纯粹的物理写入！只认字节流，不管业务逻辑
+// 返回写入的起始 Offset
+func (s *Segment) Write(data []byte) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := block.Encode()
-	if err != nil {
-		return nil, err
-	}
-
-	size := uint32(len(data))
 	offset := s.WriteOffset
 
 	if _, err := s.File.Write(data); err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	s.WriteOffset += int64(size)
-
-	return block.toMeta(s.ID, offset, size), nil
+	s.WriteOffset += int64(len(data))
+	return offset, nil
 }
 
-// ReadBlock 根据元数据从文件中读取并解析 Block
-func (s *Segment) ReadBlock(meta *BlockMeta) (*Block, error) {
+// ReadAt 提供极其纯粹的物理读取
+func (s *Segment) ReadAt(size uint32, offset int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data := make([]byte, meta.Size)
-	_, err := s.File.ReadAt(data, meta.Offset)
-	if err != nil {
+	data := make([]byte, size)
+	if _, err := s.File.ReadAt(data, offset); err != nil {
 		return nil, err
 	}
 
-	return DecodeBlock(data)
+	return data, nil
+}
+
+// Size 获取当前文件的大小（线程安全），用于 Manager 判断轮转
+func (s *Segment) Size() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.WriteOffset
+}
+
+// Sync 强制将 Page Cache 刷入磁盘
+func (s *Segment) Sync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.File.Sync()
 }
 
 // Close 关闭文件
