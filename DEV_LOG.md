@@ -4,17 +4,17 @@
 
 ### 🎯 今日核心任务：构建高效刷入机制与架构重构
 
-#### 1. Series 内部：状态监控与“交出”逻辑
-*   **双重判定逻辑**：在 `Series.ShouldFlush()` 中实现 `(len >= 1000) || (now - lastFlush >= 60s)`。
-*   **解耦式 Flush**：重构 `Flush` 方法，使其不再接收具体的 `Segment` 对象，而是接收一个接口（如 `BlockWriter`）。`Series` 仅负责打包数据，至于写到哪个文件、如何轮转，`Series` 完全“不知情”。
-*   **回填更新**：在数据写完后，将返回的 `BlockMeta` 原子地追加到 `Series.Blocks` 列表，确保查询立即可见。
+#### 1. Series 内部：状态监控与"交出"逻辑
+*   **Flush 条件**：`Series.ShouldFlush()` 判断缓冲区是否达到阈值（点数 >= 1000 或时间 >= 60s）。
+*   **解耦设计**：`Series.Flush()` 直接返回 `*Block`，不持有 `Segment` 引用。由 Engine 调用 `Manager.WriteBlock()` 处理写入和轮转。
+*   **索引更新**：写入完成后，调用 `Series.AddBlock(meta)` 将 `BlockMeta` 追加到索引列表。
 
-#### 2. Manager 内部：物理策略与“追加”逻辑
+#### 2. Manager 内部：物理策略与"追加"逻辑
 *   **原子追加与轮转检查**：在 `Manager.WriteBlock` 中，首先检查物理文件状态（大小是否 > 256MB 或 创建时间是否 > 2小时）。如果满足，立即轮转文件。
 *   **顺序写保证**：通过 `Manager.mu` 确保即便有 100 个 Series 同时请求刷盘，进入磁盘文件的 Block 也是排队顺序写入的，维持磁盘高吞吐。
-*   **时间戳记录**：为每个 Segment 记录 `CreatedAt`，解决你担心的“一个文件跨越数天”的问题。
+*   **时间戳记录**：为每个 Segment 记录 `CreatedAt`，解决你担心的"一个文件跨越数天"的问题。
 
-#### 3. Engine 内部：心跳驱动与“调度”逻辑
+#### 3. Engine 内部：心跳驱动与"调度"逻辑
 *   **中央心跳 (1s Ticker)**：在 `Engine` 层启动一个全局协程。
 *   **惰性扫描**：每秒钟 Ticker 醒来，遍历 `Index` 中的所有 `Series`，仅对 `ShouldFlush()` 返回 `true` 的 `Series` 发起真正的 `Flush(Manager)` 调用。
 *   **空载优化**：如果 Buffer 为空，直接跳过，确保在没有写入时系统处于零 IO 状态。
@@ -95,4 +95,4 @@
 
 1. **Segment 轮转管理**：实现 `Manager` 结构，当文件写满（如 512MB）时自动切换新文件。
 2. **引擎协调器 (`internal/engine`)**：初始化各组件，配置路径，管理全局生命周期。
-3. **崩溃恢复 (Recovery)**：实现 WAL 或通过扫描 Segment 重建内存索
+3. **崩溃恢复 (Recovery)**：实现 WAL 或通过扫描 Segment 重建内存索引。

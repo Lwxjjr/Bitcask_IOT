@@ -2,69 +2,112 @@ package index
 
 import (
 	"sync"
+	"time"
 
 	"github.com/bitcask-iot/engine/internal/storage"
 )
 
-// BlockMaxPoints 每个 Block 最多包含的数据点数
-const BlockMaxPoints = 1000
+// 阈值配置
+const (
+	BlockMaxPoints     = 1000             // 触发刷盘的数量阈值
+	ForceFlushInterval = 60 * time.Second // 触发强制刷盘的时间阈值
+)
 
-// Series 代表一个传感器的时间线
-// 它负责管理热数据（Buffer）和冷数据索引（Blocks）
+// Series 代表一个传感器的专属时间线
 type Series struct {
-	mu           sync.RWMutex
-	ID           uint32
-	ActiveBuffer []storage.Point
-	Blocks       []*storage.BlockMeta
+	ID            uint32
+	mu            sync.RWMutex         // 读写锁：保护下方所有字段
+	ActiveBuffer  []storage.Point      // 热数据：待落盘的点
+	Blocks        []*storage.BlockMeta // 冷索引：已落盘的数据块目录
+	LastFlushTime time.Time            // 计时器：上次成功刷盘的时间
 }
 
 func NewSeries(ID uint32) *Series {
 	return &Series{
-		ID:           ID,
-		ActiveBuffer: make([]storage.Point, 0, 128),
-		Blocks:       make([]*storage.BlockMeta, 0),
+		ID:            ID,
+		ActiveBuffer:  make([]storage.Point, 0, BlockMaxPoints), // 预分配容量，避免扩容开销
+		Blocks:        make([]*storage.BlockMeta, 0),
+		LastFlushTime: time.Now(),
 	}
 }
 
-func (s *Series) Append(point storage.Point) {
+// ==========================================
+// ✍️ 写入路径 (Write Path)
+// ==========================================
+
+// Append 追加数据。如果达到阈值，会"窃取"并返回数据供调用方落盘。
+func (s *Series) Append(point storage.Point) []storage.Point {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.ActiveBuffer = append(s.ActiveBuffer, point)
+
+	// ⚡️ 触发条件 A：数量满了
+	if len(s.ActiveBuffer) >= BlockMaxPoints {
+		return s.stealLocked()
+	}
+	return nil // 没满，返回 nil，外部无需执行写盘
 }
 
-// ShouldFlush 判断是否需要将内存数据刷入磁盘
-func (s *Series) ShouldFlush() bool {
+// CheckForTicker 供后台 Ticker 调用，检查是否因为超时需要强制刷盘
+func (s *Series) CheckForTicker() []storage.Point {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// ⏰ 触发条件 B：有数据，且距离上次刷盘超过了设定的最大间隔
+	if len(s.ActiveBuffer) > 0 && time.Since(s.LastFlushTime) >= ForceFlushInterval {
+		return s.stealLocked()
+	}
+	return nil
+}
+
+// stealLocked 是核心的“偷梁换柱”魔法（调用方必须持有写锁）
+// 它将底层数组彻底剥离，换上新的，保证写磁盘时不会阻塞新的 Append
+func (s *Series) stealLocked() []storage.Point {
+	dataToSteal := s.ActiveBuffer
+
+	// 分配全新的底层数组
+	s.ActiveBuffer = make([]storage.Point, 0, BlockMaxPoints)
+	s.LastFlushTime = time.Now() // 重置计时器
+
+	return dataToSteal
+}
+
+// AddBlockMeta 数据成功落盘后，由外部调用此方法将元数据登记造册
+func (s *Series) AddBlockMeta(meta *storage.BlockMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Blocks = append(s.Blocks, meta)
+}
+
+// ==========================================
+// 🔍 查询路径 (Query Path)
+// ==========================================
+
+// GetHotData 获取尚未落盘的热数据（安全拷贝）
+func (s *Series) GetHotData() []storage.Point {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.ActiveBuffer) >= BlockMaxPoints
+
+	// 必须做深度拷贝，防止外部读取时切片被 stealLocked 替换或修改
+	result := make([]storage.Point, len(s.ActiveBuffer))
+	copy(result, s.ActiveBuffer)
+	return result
 }
 
-// Flush 将内存中的 ActiveBuffer 写入指定的 Segment，并清空缓冲区
-func (s *Series) Flush(seg *storage.Segment) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// FindBlocks 查询冷数据索引：找出在指定时间范围内的所有 Block
+func (s *Series) FindBlocks(start, end int64) []*storage.BlockMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	if len(s.ActiveBuffer) == 0 {
-		return nil
+	var result []*storage.BlockMeta
+	for _, meta := range s.Blocks {
+		// 时间范围过滤
+		if meta.MaxTime < start || meta.MinTime > end {
+			continue
+		}
+		// 这里存储的是指针，外部拿到指针后去调用 Manager 读盘
+		result = append(result, meta)
 	}
-
-	// 1. 打包成 Block
-	block := &storage.Block{
-		SensorID: s.ID,
-		Points:   s.ActiveBuffer,
-	}
-
-	// 2. 写入磁盘
-	meta, err := seg.WriteBlock(block)
-	if err != nil {
-		return err
-	}
-
-	// 3. 更新索引：将新的 BlockMeta 加入列表
-	s.Blocks = append(s.Blocks, meta)
-
-	// 4. 重置缓冲区（复用内存空间）
-	s.ActiveBuffer = s.ActiveBuffer[:0]
-
-	return nil
+	return result
 }
