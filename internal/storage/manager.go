@@ -86,7 +86,7 @@ func (m *Manager) loadSegments() error {
 // WriteBlock 接收业务块，编码并处理文件轮转，然后写入底层
 func (m *Manager) WriteBlock(block *Block) (*BlockMeta, error) {
 	// 1. 🚀 锁外操作：执行 CPU 密集的序列化
-	data, err := block.Encode()
+	data, err := block.encode()
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (m *Manager) ReadBlock(meta *BlockMeta) (*Block, error) {
 	}
 
 	// 锁外执行反序列化 (依赖 block.go 中的 DecodeBlock)
-	return DecodeBlock(data)
+	return decodeBlock(data)
 }
 
 // rotate 封存当前活跃段，开启一个新段

@@ -56,7 +56,7 @@ func (b *Block) toMeta(fileID uint32, offset int64, size uint32) *BlockMeta {
 
 // Encode 将 Block 序列化为字节数组
 // Format: [SensorID: 4][Count: 4][Point1: 16]...[PointN: 16]
-func (b *Block) Encode() ([]byte, error) {
+func (b *Block) encode() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// 1. 写入 SensorID
@@ -79,7 +79,7 @@ func (b *Block) Encode() ([]byte, error) {
 }
 
 // DecodeBlock 将字节数组反序列化为 Block
-func DecodeBlock(data []byte) (*Block, error) {
+func decodeBlock(data []byte) (*Block, error) {
 	buf := bytes.NewReader(data)
 	block := &Block{}
 
