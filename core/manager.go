@@ -9,8 +9,8 @@ import (
 	"sync"
 )
 
-// SegmentMaxSize 单个 Segment 的最大大小（256MB）
-const SegmentMaxSize = 256 * 1024 * 1024
+// defaultSegmentMaxSize 单个 Segment 的默认最大大小（256MB）
+const defaultSegmentMaxSize = 256 * 1024 * 1024
 
 // Manager 负责管理多个数据段文件
 type Manager struct {
@@ -24,7 +24,7 @@ type Manager struct {
 // NewManager 初始化并加载现有的段文件
 func NewManager(dirPath string, maxSize int64) (*Manager, error) {
 	if maxSize == 0 {
-		maxSize = SegmentMaxSize
+		maxSize = defaultSegmentMaxSize
 	}
 	mgr := &Manager{
 		dirPath:       dirPath,

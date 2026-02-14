@@ -13,20 +13,25 @@ const (
 
 // Series 代表一个传感器的专属时间线
 type Series struct {
-	ID            uint32
+	id            uint32
 	mu            sync.RWMutex // 读写锁：保护下方所有字段
-	ActiveBuffer  []Point      // 热数据：待落盘的点
-	Blocks        []*BlockMeta // 冷索引：已落盘的数据块目录
-	LastFlushTime time.Time    // 计时器：上次成功刷盘的时间
+	activeBuffer  []Point      // 热数据：待落盘的点
+	blocks        []*BlockMeta // 冷索引：已落盘的数据块目录
+	lastFlushTime time.Time    // 计时器：上次成功刷盘的时间
 }
 
-func NewSeries(ID uint32) *Series {
+func newSeries(id uint32) *Series {
 	return &Series{
-		ID:            ID,
-		ActiveBuffer:  make([]Point, 0, BlockMaxPoints), // 预分配容量，避免扩容开销
-		Blocks:        make([]*BlockMeta, 0),
-		LastFlushTime: time.Now(),
+		id:            id,
+		activeBuffer:  make([]Point, 0, BlockMaxPoints), // 预分配容量，避免扩容开销
+		blocks:        make([]*BlockMeta, 0),
+		lastFlushTime: time.Now(),
 	}
+}
+
+// ID 返回 Series 的 ID (只读)
+func (s *Series) ID() uint32 {
+	return s.id
 }
 
 // ==========================================
@@ -38,10 +43,10 @@ func (s *Series) Append(point Point) []Point {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ActiveBuffer = append(s.ActiveBuffer, point)
+	s.activeBuffer = append(s.activeBuffer, point)
 
 	// ⚡️ 触发条件 A：数量满了
-	if len(s.ActiveBuffer) >= BlockMaxPoints {
+	if len(s.activeBuffer) >= BlockMaxPoints {
 		return s.stealLocked()
 	}
 	return nil // 没满，返回 nil，外部无需执行写盘
@@ -53,7 +58,7 @@ func (s *Series) CheckForTicker() []Point {
 	defer s.mu.Unlock()
 
 	// ⏰ 触发条件 B：有数据，且距离上次刷盘超过了设定的最大间隔
-	if len(s.ActiveBuffer) > 0 && time.Since(s.LastFlushTime) >= ForceFlushInterval {
+	if len(s.activeBuffer) > 0 && time.Since(s.lastFlushTime) >= ForceFlushInterval {
 		return s.stealLocked()
 	}
 	return nil
@@ -62,11 +67,11 @@ func (s *Series) CheckForTicker() []Point {
 // stealLocked 是核心的“偷梁换柱”魔法（调用方必须持有写锁）
 // 它将底层数组彻底剥离，换上新的，保证写磁盘时不会阻塞新的 Append
 func (s *Series) stealLocked() []Point {
-	dataToSteal := s.ActiveBuffer
+	dataToSteal := s.activeBuffer
 
 	// 分配全新的底层数组
-	s.ActiveBuffer = make([]Point, 0, BlockMaxPoints)
-	s.LastFlushTime = time.Now() // 重置计时器
+	s.activeBuffer = make([]Point, 0, BlockMaxPoints)
+	s.lastFlushTime = time.Now() // 重置计时器
 
 	return dataToSteal
 }
@@ -75,7 +80,7 @@ func (s *Series) stealLocked() []Point {
 func (s *Series) AddBlockMeta(meta *BlockMeta) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Blocks = append(s.Blocks, meta)
+	s.blocks = append(s.blocks, meta)
 }
 
 // ==========================================
@@ -88,8 +93,8 @@ func (s *Series) GetHotData() []Point {
 	defer s.mu.RUnlock()
 
 	// 必须做深度拷贝，防止外部读取时切片被 stealLocked 替换或修改
-	result := make([]Point, len(s.ActiveBuffer))
-	copy(result, s.ActiveBuffer)
+	result := make([]Point, len(s.activeBuffer))
+	copy(result, s.activeBuffer)
 	return result
 }
 
@@ -99,7 +104,7 @@ func (s *Series) FindBlocks(start, end int64) []*BlockMeta {
 	defer s.mu.RUnlock()
 
 	var result []*BlockMeta
-	for _, meta := range s.Blocks {
+	for _, meta := range s.blocks {
 		// 时间范围过滤
 		if meta.MaxTime < start || meta.MinTime > end {
 			continue

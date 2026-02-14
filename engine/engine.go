@@ -135,8 +135,8 @@ func (e *Engine) Close() error {
 // flushSeriesData 是连接 内存(Series) 和 磁盘(Storage) 的桥梁
 func (e *Engine) flushSeriesData(series *core.Series, points []core.Point) error {
 	// 1. 组装 Block
-	// Engine 知道 series.ID，也拿到了 points，所以由它来打包
-	block := core.NewBlock(series.ID, points)
+	// Engine 知道 series.ID()，也拿到了 points，所以由它来打包
+	block := core.NewBlock(series.ID(), points)
 
 	// 2. 写磁盘
 	// 这一步会发生：序列化 -> 压缩 -> 写文件 -> 可能触发文件切分(Rotate)

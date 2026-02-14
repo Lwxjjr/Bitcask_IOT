@@ -43,7 +43,7 @@ func (idx *Index) GetOrCreateSeries(name string) *Series {
 	id := idx.nextID
 	idx.nextID++ // 计数器自增
 
-	newSeries := NewSeries(id)
+	newSeries := newSeries(id)
 	idx.seriesMap[name] = newSeries
 
 	return newSeries
