@@ -5,15 +5,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bitcask-iot/engine/internal/index"
-	"github.com/bitcask-iot/engine/internal/storage"
+	"github.com/bitcask-iot/engine/core"
 )
 
 // Engine 是数据库的对外门面
 // 它负责协调：Index (内存大脑) <-> Series (数据缓冲) <-> Storage (磁盘肌肉)
 type Engine struct {
-	storage *storage.Manager // 磁盘管理器
-	idx     *index.Index     // 内存索引
+	storage *core.Manager // 磁盘管理器
+	idx     *core.Index   // 内存索引
 
 	stopCh chan struct{}  // 关闭信号
 	wg     sync.WaitGroup // 等待组 (确保后台任务安全退出)
@@ -24,14 +23,14 @@ type Engine struct {
 func NewEngine(dirPath string) (*Engine, error) {
 	// 1. 初始化存储层 (肌肉)
 	// 会自动扫描目录，加载活跃的 Segment
-	mgr, err := storage.NewManager(dirPath, 0)
+	mgr, err := core.NewManager(dirPath, 0)
 	if err != nil {
 		return nil, fmt.Errorf("storage init failed: %v", err)
 	}
 
 	// 2. 初始化索引层 (大脑)
 	// 目前是空的，重启后需要逻辑重建 (未来可加入 HintFile 恢复)
-	idx := index.NewIndex()
+	idx := core.NewIndex()
 
 	e := &Engine{
 		storage: mgr,
@@ -54,7 +53,7 @@ func NewEngine(dirPath string) (*Engine, error) {
 // 也就是 "存"：告诉我是谁、什么时候、多少度
 func (e *Engine) Write(sensorID string, timestamp int64, value float64) error {
 	// 1. 封装成内部 Point
-	point := storage.Point{
+	point := core.Point{
 		Time:  timestamp,
 		Value: value,
 	}
@@ -76,14 +75,14 @@ func (e *Engine) Write(sensorID string, timestamp int64, value float64) error {
 
 // Query 🔍 3. 查询数据
 // 也就是 "取"：查出一段时间内的所有点
-func (e *Engine) Query(sensorID string, start, end int64) ([]storage.Point, error) {
+func (e *Engine) Query(sensorID string, start, end int64) ([]core.Point, error) {
 	// 1. 找设备
 	series := e.idx.GetOrCreateSeries(sensorID)
 	if series == nil {
 		return nil, nil // 没这个设备，直接返回空
 	}
 
-	var result []storage.Point
+	var result []core.Point
 
 	// 2. 查磁盘 (冷数据 Cold Data)
 	// 从 Series 里拿出符合时间范围的“藏宝图坐标” (BlockMeta)
@@ -134,10 +133,10 @@ func (e *Engine) Close() error {
 // ==========================================
 
 // flushSeriesData 是连接 内存(Series) 和 磁盘(Storage) 的桥梁
-func (e *Engine) flushSeriesData(series *index.Series, points []storage.Point) error {
+func (e *Engine) flushSeriesData(series *core.Series, points []core.Point) error {
 	// 1. 组装 Block
 	// Engine 知道 series.ID，也拿到了 points，所以由它来打包
-	block := storage.NewBlock(series.ID, points)
+	block := core.NewBlock(series.ID, points)
 
 	// 2. 写磁盘
 	// 这一步会发生：序列化 -> 压缩 -> 写文件 -> 可能触发文件切分(Rotate)
@@ -184,7 +183,7 @@ func (e *Engine) checkForceFlush() {
 		if points := series.CheckForTicker(); len(points) > 0 {
 			// 复用核心刷盘逻辑
 			if err := e.flushSeriesData(series, points); err != nil {
-				fmt.Printf("Error flushing series %s: %v\n", series.ID, err)
+				fmt.Printf("Error flushing series %d: %v\n", series.ID, err)
 			}
 		}
 	}
