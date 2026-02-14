@@ -11,7 +11,7 @@ import (
 // Engine 是数据库的对外门面
 // 它负责协调：Index (内存大脑) <-> Series (数据缓冲) <-> Storage (磁盘肌肉)
 type Engine struct {
-	storage *core.Manager // 磁盘管理器
+	manager *core.Manager // 磁盘管理器
 	idx     *core.Index   // 内存索引
 
 	stopCh chan struct{}  // 关闭信号
@@ -33,7 +33,7 @@ func NewEngine(dirPath string) (*Engine, error) {
 	idx := core.NewIndex()
 
 	e := &Engine{
-		storage: mgr,
+		manager: mgr,
 		idx:     idx,
 		stopCh:  make(chan struct{}),
 	}
@@ -90,7 +90,7 @@ func (e *Engine) Query(sensorID string, start, end int64) ([]core.Point, error) 
 
 	for _, meta := range blockMetas {
 		// 拿着坐标去问 Storage 要物理数据
-		block, err := e.storage.ReadBlock(meta)
+		block, err := e.manager.ReadBlock(meta)
 		if err != nil {
 			return nil, fmt.Errorf("read block failed: %v", err)
 		}
@@ -125,7 +125,7 @@ func (e *Engine) Close() error {
 	// 2. (可选) 这里可以遍历所有 Series 执行一次强制 ForceFlush，确保内存不丢数据
 
 	// 3. 关闭底层文件句柄
-	return e.storage.Close()
+	return e.manager.Close()
 }
 
 // ==========================================
@@ -140,7 +140,7 @@ func (e *Engine) flushSeriesData(series *core.Series, points []core.Point) error
 
 	// 2. 写磁盘
 	// 这一步会发生：序列化 -> 压缩 -> 写文件 -> 可能触发文件切分(Rotate)
-	meta, err := e.storage.WriteBlock(block)
+	meta, err := e.manager.WriteBlock(block)
 	if err != nil {
 		return err
 	}

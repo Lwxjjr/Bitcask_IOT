@@ -98,15 +98,14 @@ bitcask-iot/
 - **cli**: 调试工具，支持查询、统计等操作
 
 #### engine/
-- 协调 MemTable 和 Storage，处理 Put/Get
+- **engine**: 数据库对外门面 (Facade)，协调 Index、Series 和 Storage
 
-#### internal/
-- **collector**: 从 OPC UA 服务器采集数据
-- **compaction**: 实现 Delta-of-Delta 和 XOR 编码
-- **index**: 管理内存中的 Block 索引
-- **query**: 实现查询迭代器和降采样算法（LTTB）
-- **service**: HTTP API 端点实现
-- **storage**: Segment 文件读写，Block 管理
+#### core/
+- **block**: 数据分块定义与编解码 (基础二进制序列化)
+- **index**: 内存索引管理 (Series Map)
+- **manager**: Segment 文件生命周期管理 (轮转、刷盘)
+- **segment**: 底层文件 IO 操作 (Append-Only)
+- **series**: 单个时间线的内存缓冲与 Block 索引管理
 
 #### pkg/
 - **config**: 配置文件加载和验证
