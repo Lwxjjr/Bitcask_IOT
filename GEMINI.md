@@ -58,33 +58,36 @@
 bitcask-iot/
 ├── cmd/                          # [入口层] 应用程序入口
 │   ├── server/
-│   │   └── main.go               # 启动 HTTP 服务 (调用根目录 engine)
+│   │   └── main.go               # 服务端入口，启动 DB 并监听 TCP 端口
 │   └── cli/
-│       └── main.go               # 命令行工具 (调用根目录 engine)
+│       └── main.go               # 客户端入口，启动交互式 Shell
 │
 ├── configs/                      # [配置]
-│   └── config.yaml
+│   └── config.yaml               # 配置文件 (新增地址端口配置)
 │
-├── engine/                       # 🌟 [核心 SDK] 数据库对外门面 (Facade)
-│   ├── engine.go                 # 核心接口: New, Write, Query, Close
-│   ├── options.go                # 配置选项: WithDir, WithSegmentSize
-│   └── errors.go                 # 公开错误定义: ErrKeyNotFound
+├── core/                      # 🌟 [存储核心] (原 engine + core 合并)
+│   ├── db.go                     # 数据库对外门面，协调 IO 与索引
+│   ├── options.go                # 配置选项模式实现
+│   ├── block.go                  # 数据分块定义与二进制编解码
+│   ├── segment.go                # 底层物理文件 IO 操作 (Append-Only)
+│   ├── index.go                  # 内存索引管理 (Key 映射物理位置)
+│   ├── manager.go                # 文件生命周期管理 (轮转、归档)
+│   └── series.go                 # IOT 时间线数据缓冲与管理
 │
-├── core/                         # 🌟 [核心实现] 打平后的引擎核心逻辑
-│   ├── block.go                  # 数据分块定义与编解码
-│   ├── manager.go                # Segment 文件管理器
-│   ├── segment.go                # 单个物理文件操作
-│   ├── index.go                  # 内存索引映射
-│   └── series.go                 # 传感器时间线与缓冲控制
+├── protocol/                     # 🟣 [协议层] (新增)
+│   └── codec.go                  # 通信协议定义与粘包处理 (LTV 格式)
 │
-├── pkg/                          # [公共库] 通用工具 (无业务逻辑)
-│   ├── config/                   # Viper 配置加载
-│   ├── logger/                   # Zap 日志封装
-│   └── utils/                    # 时间对齐、UUID 等工具
+├── tcp/                          # 🔵 [网络层] (新增)
+│   ├── server.go                 # TCP 服务端监听与连接管理
+│   └── handler.go                # 业务逻辑胶水，桥接 Protocol 与 DB
 │
-├── test/                         # [测试]
-│   ├── benchmark/                # 压力测试
-│   └── mock/                     # Mock 数据生成
+├── client/                       # 🟠 [SDK 层] (新增)
+│   └── client.go                 # 客户端 SDK，封装网络请求细节
+│
+├── pkg/                          # [公共库] (保持不变)
+│   ├── config/                   # Viper 配置加载与热重载
+│   ├── logger/                   # Zap 日志统一封装
+│   └── utils/                    # 通用工具函数 (ID, Time)
 │
 ├── go.mod
 ├── go.sum
