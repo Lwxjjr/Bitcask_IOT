@@ -13,7 +13,7 @@ const (
 
 // Series 代表一个传感器的专属时间线
 type Series struct {
-	id            uint32
+	ID            uint32
 	mu            sync.RWMutex // 读写锁：保护下方所有字段
 	activeBuffer  []Point      // 热数据：待落盘的点
 	blocks        []*BlockMeta // 冷索引：已落盘的数据块目录
@@ -22,16 +22,11 @@ type Series struct {
 
 func newSeries(id uint32) *Series {
 	return &Series{
-		id:            id,
+		ID:            id,
 		activeBuffer:  make([]Point, 0, BlockMaxPoints), // 预分配容量，避免扩容开销
 		blocks:        make([]*BlockMeta, 0),
 		lastFlushTime: time.Now(),
 	}
-}
-
-// ID 返回 Series 的 ID (只读)
-func (s *Series) ID() uint32 {
-	return s.id
 }
 
 // ==========================================
