@@ -3,12 +3,12 @@ package tcp
 import (
 	"log"
 	"net"
+
+	"github.com/bitcask-iot/engine/core"
 )
 
-// StartServer 启动 TCP 服务端大门
-// 目前 MVP 阶段先不传入 db，专心搞网络联调
-func StartServer(addr string) error {
-	// 1. 申请一个 TCP 端口作为“门面”
+// StartServer 启动 TCP 服务端大门 (新增了 db 参数)
+func StartServer(addr string, db *core.DB) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -17,7 +17,6 @@ func StartServer(addr string) error {
 
 	log.Printf("🚀 迎宾大厅已开启，正在监听端口: %s", addr)
 
-	// 2. 迎宾员进入死循环，等待客人敲门
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -25,8 +24,7 @@ func StartServer(addr string) error {
 			continue
 		}
 
-		// 3. 极其关键：客人来了，立刻派一个专属服务员 (Goroutine) 去接待他
-		// 这样迎宾员就能瞬间回到门口等下一个客人，不会阻塞！
-		go HandleConnection(conn)
+		// 🌟 极其关键：把 conn 和 db 一起交给服务员！
+		go HandleConnection(conn, db)
 	}
 }

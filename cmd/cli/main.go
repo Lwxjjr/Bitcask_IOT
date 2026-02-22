@@ -8,38 +8,49 @@ import (
 )
 
 func main() {
-	addr := "127.0.0.1:8080"
-	log.Printf("🔌 准备连接服务端: %s", addr)
-
-	// 1. 拨号连接 Server
-	c, err := client.NewClient(addr)
+	c, err := client.NewClient("127.0.0.1:8080")
 	if err != nil {
 		log.Fatalf("连接失败: %v", err)
 	}
 	defer c.Close()
-	log.Printf("✅ 连接成功！")
 
-	// 2. 测试发送 PUT 请求 (写数据)
-	key := []byte("sensor_temp")
-	val := []byte("25.5")
-	log.Printf("-> 正在发送 PUT 请求 [Key: %s, Value: %s]", string(key), string(val))
+	sensorID := "temp_engine_01"
 
-	if err := c.Put(key, val); err != nil {
-		log.Printf("❌ PUT 失败: %v", err)
-	} else {
-		log.Printf("✅ PUT 成功！(服务端回复了 OK)")
+	// 在客户端获取准确的事件时间 (毫秒级)
+	now := time.Now().UnixMilli()
+
+	log.Printf("🔌 连接成功！开始时序写入测试...")
+
+	// 1. 连续 Write 3 条数据 (模拟传感器持续上报)
+	log.Printf("-> 正在写入 T1: %d, 值: 25.5", now)
+	c.Write(sensorID, now, 25.5)
+
+	time.Sleep(100 * time.Millisecond) // 稍微等一下，制造时间差
+
+	now2 := time.Now().UnixMilli()
+	log.Printf("-> 正在写入 T2: %d, 值: 26.1", now2)
+	c.Write(sensorID, now2, 26.1)
+
+	time.Sleep(100 * time.Millisecond)
+
+	now3 := time.Now().UnixMilli()
+	log.Printf("-> 正在写入 T3: %d, 值: 26.8", now3)
+	c.Write(sensorID, now3, 26.8)
+
+	log.Printf("✅ 写入完毕！开始测试范围查询...\n")
+
+	// 2. Query 查询刚才这 1 秒内的所有数据
+	start := now - 1000 // 往前推 1 秒
+	end := now3 + 1000  // 往后推 1 秒
+
+	log.Printf("-> 正在查询范围 [%d] 到 [%d]", start, end)
+	points, err := c.Query(sensorID, start, end)
+	if err != nil {
+		log.Fatalf("❌ Query 失败: %v", err)
 	}
 
-	time.Sleep(1 * time.Second) // 稍微停顿1秒，让你能在终端看清日志的先后顺序
-
-	// 3. 测试发送 GET 请求 (读数据)
-	log.Printf("-> 正在发送 GET 请求 [Key: %s]", string(key))
-
-	resp, err := c.Get(key)
-	if err != nil {
-		log.Printf("❌ GET 失败: %v", err)
-	} else {
-		// 注意：目前我们的 Server 还是个“回声筒”，不管 GET 什么都会回 "OK"
-		log.Printf("✅ GET 成功！收到返回值: %s", string(resp))
+	log.Printf("✅ Query 成功！共查出 %d 个点:", len(points))
+	for i, p := range points {
+		log.Printf("   [%d] 时间戳: %d => 温度: %.2f", i+1, p.Time, p.Value)
 	}
 }

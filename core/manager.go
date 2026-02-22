@@ -32,6 +32,13 @@ func NewManager(dirPath string, maxSize int64) (*Manager, error) {
 		maxSize:       maxSize,
 	}
 
+	// 确保目录存在
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create data directory: %v", err)
+		}
+	}
+
 	if err := mgr.loadSegments(); err != nil {
 		return nil, err
 	}

@@ -10,8 +10,8 @@ import (
 // ==========================================
 const (
 	// 客户端 -> 服务端
-	TypePut uint8 = 1 // 写入数据
-	TypeGet uint8 = 2 // 读取数据
+	TypeWrite uint8 = 1 // 写入数据
+	TypeQuery uint8 = 2 // 读取数据
 
 	// 服务端 -> 客户端
 	TypeReply uint8 = 3 // 正常响应 (带数据或仅代表成功)
