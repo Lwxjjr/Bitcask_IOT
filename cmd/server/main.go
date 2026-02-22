@@ -1,15 +1,17 @@
 package main
 
 import (
-	"fmt"
+	"log"
+
+	"github.com/bitcask-iot/engine/tcp"
 )
 
 func main() {
-	// TODO: 从底层实现 Bitcask 存储引擎
-	// TODO: 实现数据采集层
-	// TODO: 实现索引层
-	// TODO: 实现服务层
+	addr := ":8080"
+	log.Printf("🚀 准备启动 Bitcask-IoT 服务端 MVP...")
 
-	fmt.Println("Bitcask IoT Storage Engine")
-	fmt.Println("TODO: 从底层开始实现，从核心 Bitcask 引擎开始")
+	// 启动 TCP Server (这个函数内部是个死循环，会一直阻塞在这里)
+	if err := tcp.StartServer(addr); err != nil {
+		log.Fatalf("服务端异常退出: %v", err)
+	}
 }

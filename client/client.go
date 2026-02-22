@@ -1,211 +1,87 @@
 package client
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
-	"io"
 	"net"
-	"sync"
-	"time"
 
 	"github.com/bitcask-iot/engine/protocol"
 )
 
-var (
-	ErrConnectionClosed = errors.New("connection closed")
-	ErrTimeout          = errors.New("operation timeout")
-)
-
-// Client 客户端 SDK
+// Client 是我们与服务端通信的 SDK 载体
 type Client struct {
-	address string
-	conn    net.Conn
-	reader  *bufio.Reader
-	mu      sync.Mutex
+	conn net.Conn
 }
 
-// NewClient 创建客户端
-func NewClient(address string) *Client {
-	return &Client{
-		address: address,
-	}
-}
-
-// Connect 连接到服务器
-func (c *Client) Connect() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	conn, err := net.DialTimeout("tcp", c.address, 10*time.Second)
+// NewClient 拨号连接服务端
+func NewClient(addr string) (*Client, error) {
+	// net.Dial 就像是打电话，尝试连接服务端的 IP 和端口
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("connect to %s failed: %w", c.address, err)
+		return nil, fmt.Errorf("连接服务端失败: %v", err)
 	}
-
-	c.conn = conn
-	c.reader = bufio.NewReader(conn)
-
-	return nil
+	return &Client{conn: conn}, nil
 }
 
-// Close 关闭连接
+// Close 断开连接
 func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.conn != nil {
-		err := c.conn.Close()
-		c.conn = nil
-		c.reader = nil
-		return err
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// Put 发送写入请求
+func (c *Client) Put(key, value []byte) error {
+	// 1. 组装请求包
+	req := &protocol.Packet{
+		Type:  protocol.TypePut,
+		Key:   key,
+		Value: value,
+	}
+
+	// 2. 封包并发送
+	if _, err := c.conn.Write(protocol.Encode(req)); err != nil {
+		return fmt.Errorf("发送 Put 请求失败: %v", err)
+	}
+
+	// 3. 阻塞等待并拆解服务端的回复
+	resp, err := protocol.Decode(c.conn)
+	if err != nil {
+		return fmt.Errorf("读取服务端回复失败: %v", err)
+	}
+
+	// 4. 检查服务端是否报错
+	if resp.Type == protocol.TypeError {
+		return fmt.Errorf("服务端报错: %s", string(resp.Value))
 	}
 
 	return nil
 }
 
-// isConnected 检查是否已连接
-func (c *Client) isConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil
-}
-
-// Write 写入数据点
-func (c *Client) Write(sensorID string, timestamp int64, value float64) error {
-	if !c.isConnected() {
-		return errors.New("not connected to server")
+// Get 发送读取请求
+func (c *Client) Get(key []byte) ([]byte, error) {
+	// 1. 组装请求包 (Get 请求不需要传 Value)
+	req := &protocol.Packet{
+		Type: protocol.TypeGet,
+		Key:  key,
 	}
 
-	// 构造写入请求
-	req := &protocol.WriteRequest{
-		SensorID:  sensorID,
-		Timestamp: timestamp,
-		Value:     value,
+	// 2. 封包并发送
+	if _, err := c.conn.Write(protocol.Encode(req)); err != nil {
+		return nil, fmt.Errorf("发送 Get 请求失败: %v", err)
 	}
 
-	// 编码请求
-	msg, err := protocol.EncodeWriteRequest(req)
+	// 3. 阻塞等待并拆解服务端的回复
+	resp, err := protocol.Decode(c.conn)
 	if err != nil {
-		return fmt.Errorf("encode write request failed: %w", err)
+		return nil, fmt.Errorf("读取服务端回复失败: %v", err)
 	}
 
-	// 发送请求并获取响应
-	respMsg, err := c.sendAndReceive(msg)
-	if err != nil {
-		return err
+	// 4. 检查服务端是否报错
+	if resp.Type == protocol.TypeError {
+		return nil, fmt.Errorf("服务端报错: %s", string(resp.Value))
 	}
 
-	// 解码响应
-	resp, err := protocol.DecodeWriteResponse(respMsg)
-	if err != nil {
-		return fmt.Errorf("decode write response failed: %w", err)
-	}
-
-	if !resp.Success {
-		return fmt.Errorf("write failed: %s", resp.Message)
-	}
-
-	return nil
-}
-
-// Query 查询数据点
-func (c *Client) Query(sensorID string, start, end int64) ([]protocol.Point, error) {
-	if !c.isConnected() {
-		return nil, errors.New("not connected to server")
-	}
-
-	// 构造查询请求
-	req := &protocol.QueryRequest{
-		SensorID: sensorID,
-		Start:    start,
-		End:      end,
-	}
-
-	// 编码请求
-	msg, err := protocol.EncodeQueryRequest(req)
-	if err != nil {
-		return nil, fmt.Errorf("encode query request failed: %w", err)
-	}
-
-	// 发送请求并获取响应
-	respMsg, err := c.sendAndReceive(msg)
-	if err != nil {
-		return nil, err
-	}
-
-	// 解码响应
-	resp, err := protocol.DecodeQueryResponse(respMsg)
-	if err != nil {
-		return nil, fmt.Errorf("decode query response failed: %w", err)
-	}
-
-	return resp.Points, nil
-}
-
-// sendAndReceive 发送请求并接收响应
-func (c *Client) sendAndReceive(msg []byte) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn == nil {
-		return nil, errors.New("not connected to server")
-	}
-
-	// 设置写超时
-	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-
-	// 发送请求
-	if _, err := c.conn.Write(msg); err != nil {
-		return nil, fmt.Errorf("send request failed: %w", err)
-	}
-
-	// 读取响应头部
-	headerBuf := make([]byte, 10)
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	_, err := io.ReadFull(c.reader, headerBuf)
-	if err != nil {
-		return nil, fmt.Errorf("read response header failed: %w", err)
-	}
-
-	// 解析头部，获取 payload 长度
-	payloadLen, err := protocol.GetPayloadLength(headerBuf)
-	if err != nil {
-		return nil, fmt.Errorf("parse response header failed: %w", err)
-	}
-
-	// 读取 payload
-	payloadBuf := make([]byte, payloadLen)
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	_, err = io.ReadFull(c.reader, payloadBuf)
-	if err != nil {
-		return nil, fmt.Errorf("read response payload failed: %w", err)
-	}
-
-	// 组合完整响应
-	resp := append(headerBuf, payloadBuf...)
-	return resp, nil
-}
-
-// WriteBatch 批量写入数据点
-func (c *Client) WriteBatch(sensorID string, points []protocol.Point) error {
-	for _, p := range points {
-		if err := c.Write(sensorID, p.Timestamp, p.Value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Ping 检测连接是否可用
-func (c *Client) Ping() error {
-	if !c.isConnected() {
-		return errors.New("not connected to server")
-	}
-
-	// 使用一个简单的写入来检测连接
-	testSensorID := "__ping__"
-	testTimestamp := time.Now().Unix()
-	testValue := 0.0
-
-	return c.Write(testSensorID, testTimestamp, testValue)
+	// 5. 返回服务端查询到的 Value
+	return resp.Value, nil
 }
