@@ -79,3 +79,28 @@ func TestManager_Reload(t *testing.T) {
 		t.Errorf("expected active ID 0, got %d", mgr2.activeSegment.ID)
 	}
 }
+
+func TestNewManager_CreateDir(t *testing.T) {
+	// 定义一个不存在的临时子目录
+	baseDir, _ := os.MkdirTemp("", "mgr-create-dir")
+	defer os.RemoveAll(baseDir)
+	
+	targetDir := filepath.Join(baseDir, "nested/tsdb_data")
+
+	// 确保目标目录当前不存在
+	if _, err := os.Stat(targetDir); !os.IsNotExist(err) {
+		t.Fatalf("target directory %s should not exist before test", targetDir)
+	}
+
+	// 初始化 Manager
+	mgr, err := NewManager(targetDir, 1024*1024)
+	if err != nil {
+		t.Fatalf("failed to create Manager with non-existent directory: %v", err)
+	}
+	defer mgr.Close()
+
+	// 验证目录是否已创建
+	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+		t.Error("expected directory to be created, but it does not exist")
+	}
+}
