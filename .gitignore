@@ -40,3 +40,4 @@ logs/
 
 # files 
 tsdb_data/
+*.vlog

@@ -1,56 +1,198 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/bitcask-iot/engine/client"
+	"github.com/bitcask-iot/engine/client" // ⚠️ 确认你的 import 路径正确
 )
 
 func main() {
-	c, err := client.NewClient("127.0.0.1:8080")
+	// 1. 连接服务端
+	serverAddr := "127.0.0.1:8080"
+	c, err := client.NewClient(serverAddr)
 	if err != nil {
-		log.Fatalf("连接失败: %v", err)
+		log.Fatalf("❌ 连接服务端失败: %v", err)
 	}
 	defer c.Close()
 
-	sensorID := "temp_engine_01"
+	// 2. 打印欢迎语
+	printBanner(serverAddr)
 
-	// 在客户端获取准确的事件时间 (毫秒级)
-	now := time.Now().UnixMilli()
+	// 3. 开启读取用户输入的循环 (REPL)
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		// 打印提示符
+		fmt.Print("Bitcask-IoT > ")
 
-	log.Printf("🔌 连接成功！开始时序写入测试...")
+		// 阻塞等待用户敲回车
+		if !scanner.Scan() {
+			break // 遇到 EOF (Ctrl+D) 退出
+		}
 
-	// 1. 连续 Write 3 条数据 (模拟传感器持续上报)
-	log.Printf("-> 正在写入 T1: %d, 值: 25.5", now)
-	c.Write(sensorID, now, 25.5)
+		// 获取输入并去除首尾空格
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
 
-	time.Sleep(100 * time.Millisecond) // 稍微等一下，制造时间差
+		// 切割命令: "put temp 25.5" -> ["put", "temp", "25.5"]
+		parts := strings.Fields(line)
+		cmd := strings.ToLower(parts[0])
 
-	now2 := time.Now().UnixMilli()
-	log.Printf("-> 正在写入 T2: %d, 值: 26.1", now2)
-	c.Write(sensorID, now2, 26.1)
+		switch cmd {
+		case "put", "write":
+			handleWrite(c, parts)
+		case "get", "query":
+			handleQuery(c, parts)
+		case "exit", "quit":
+			fmt.Println("👋 Bye!")
+			return
+		case "help":
+			printHelp()
+		default:
+			fmt.Printf("❌ 未知命令: %s (输入 help 查看帮助)\n", cmd)
+		}
+	}
+}
 
-	time.Sleep(100 * time.Millisecond)
+// ==========================================
+// 🎮 具体的命令处理逻辑
+// ==========================================
 
-	now3 := time.Now().UnixMilli()
-	log.Printf("-> 正在写入 T3: %d, 值: 26.8", now3)
-	c.Write(sensorID, now3, 26.8)
+// handleWrite 处理写入: put <key> <value> [timestamp]
+func handleWrite(c *client.Client, parts []string) {
+	if len(parts) < 3 {
+		fmt.Println("❌ 格式错误: put <sensor_id> <value> [timestamp]")
+		return
+	}
 
-	log.Printf("✅ 写入完毕！开始测试范围查询...\n")
+	sensorID := parts[1]
 
-	// 2. Query 查询刚才这 1 秒内的所有数据
-	start := now - 1000 // 往前推 1 秒
-	end := now3 + 1000  // 往后推 1 秒
+	// 解析 value (float64)
+	val, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		fmt.Println("❌ Value 必须是数字")
+		return
+	}
 
-	log.Printf("-> 正在查询范围 [%d] 到 [%d]", start, end)
+	// 解析 timestamp (如果有第4个参数就用，没有就用现在)
+	var ts int64
+	if len(parts) >= 4 {
+		t, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			fmt.Println("❌ Timestamp 必须是整数毫秒")
+			return
+		}
+		ts = t
+	} else {
+		ts = time.Now().UnixMilli()
+	}
+
+	// 发送请求
+	err = c.Write(sensorID, ts, val)
+	if err != nil {
+		fmt.Printf("❌ 写入失败: %v\n", err)
+	} else {
+		fmt.Printf("✅ 写入成功! [Key:%s, Time:%d, Val:%.2f]\n", sensorID, ts, val)
+	}
+}
+
+// handleQuery 处理查询: get <key> (默认查最近5分钟)
+// 或者: get <key> <start_ts> <end_ts>
+func handleQuery(c *client.Client, parts []string) {
+	if len(parts) < 2 {
+		fmt.Println("❌ 格式错误: get <sensor_id> [start_ts] [end_ts]")
+		return
+	}
+
+	sensorID := parts[1]
+
+	var start, end int64
+
+	// 智能判断：用户没传时间，默认查“过去5分钟”到“未来1分钟”
+	if len(parts) == 2 {
+		now := time.Now().UnixMilli()
+		start = now - (5 * 60 * 1000) // 5分钟前
+		end = now + (60 * 1000)       // 1分钟后
+		fmt.Printf("🔍 未指定时间范围，默认查询最近 5 分钟...\n")
+	} else if len(parts) == 4 {
+		// 用户指定了 start 和 end
+		var err error
+		start, err = strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			fmt.Println("❌ Start Time 格式错误")
+			return
+		}
+		end, err = strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			fmt.Println("❌ End Time 格式错误")
+			return
+		}
+	} else {
+		fmt.Println("❌ 格式错误: 要么不传时间，要么把 start 和 end 都传上")
+		return
+	}
+
+	// 发送请求
 	points, err := c.Query(sensorID, start, end)
 	if err != nil {
-		log.Fatalf("❌ Query 失败: %v", err)
+		fmt.Printf("❌ 查询失败: %v\n", err)
+		return
 	}
 
-	log.Printf("✅ Query 成功！共查出 %d 个点:", len(points))
-	for i, p := range points {
-		log.Printf("   [%d] 时间戳: %d => 温度: %.2f", i+1, p.Time, p.Value)
+	// 打印结果
+	fmt.Printf("📊 查询结果 (共 %d 条):\n", len(points))
+	fmt.Println("------------------------------------------------")
+	fmt.Printf("%-25s | %s\n", "Timestamp (Ms)", "Value")
+	fmt.Println("------------------------------------------------")
+	if len(points) == 0 {
+		fmt.Println("   (无数据)")
 	}
+	for _, p := range points {
+		// 把毫秒转成可读的时间字符串
+		tStr := time.UnixMilli(p.Time).Format("15:04:05.000")
+		fmt.Printf("%s (%d) | %.2f\n", tStr, p.Time, p.Value)
+	}
+	fmt.Println("------------------------------------------------")
+}
+
+func printBanner(addr string) {
+	fmt.Println(`
+    ____  _ __                 __    
+   / __ )(_) /__________ ____ / /__  
+  / __  / / __/ ___/ __ / __ / //_/  
+ / /_/ / / /_/ /__/ /_/ (__  / ,<    
+/_____/_/\__/\___/\__,_/____/_/|_|   
+IOT TSDB CLI v1.0
+Connected to ` + addr)
+	printHelp()
+}
+
+func printHelp() {
+	fmt.Println(`
+命令帮助:
+  1. 写入数据 (自动当前时间):
+     put <sensor_id> <value>
+     例: put temp_01 26.5
+
+  2. 写入历史数据 (指定时间戳):
+     put <sensor_id> <value> <timestamp>
+     例: put temp_01 26.5 1709880000000
+
+  3. 查询数据 (默认查最近5分钟):
+     get <sensor_id>
+     例: get temp_01
+
+  4. 查询指定范围:
+     get <sensor_id> <start_ts> <end_ts>
+
+  5. 退出:
+     exit / quit
+---------------------------------------`)
 }

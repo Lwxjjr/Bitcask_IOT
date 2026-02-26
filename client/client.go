@@ -13,12 +13,6 @@ type Client struct {
 	conn net.Conn
 }
 
-// Point 定义给外部调用的结构体
-type Point struct {
-	Time  int64
-	Value float64
-}
-
 func NewClient(addr string) (*Client, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -60,7 +54,7 @@ func (c *Client) Write(sensorID string, timestamp int64, value float64) error {
 }
 
 // Query 🌟 替换原来的 Get，支持时间范围扫描
-func (c *Client) Query(sensorID string, start, end int64) ([]Point, error) {
+func (c *Client) Query(sensorID string, start, end int64) ([]protocol.Point, error) {
 	valBuf := make([]byte, 16)
 	binary.BigEndian.PutUint64(valBuf[0:8], uint64(start))
 	binary.BigEndian.PutUint64(valBuf[8:16], uint64(end))
@@ -83,12 +77,12 @@ func (c *Client) Query(sensorID string, start, end int64) ([]Point, error) {
 		return nil, fmt.Errorf("服务端报错: %s", string(resp.Value))
 	}
 
-	// 拆解服务端返回的一大坨二进制，还原成 []Point
-	var points []Point
+	// 拆解服务端返回的一大坨二进制，还原成 []protocol.Point
+	var points []protocol.Point
 	for i := 0; i < len(resp.Value); i += 16 {
 		t := int64(binary.BigEndian.Uint64(resp.Value[i : i+8]))
 		v := math.Float64frombits(binary.BigEndian.Uint64(resp.Value[i+8 : i+16]))
-		points = append(points, Point{Time: t, Value: v})
+		points = append(points, protocol.Point{Time: t, Value: v})
 	}
 
 	return points, nil
