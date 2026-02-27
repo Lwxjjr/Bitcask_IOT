@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/bitcask-iot/engine/client" // ⚠️ 确认你的 import 路径正确
+	"github.com/bitcask-iot/engine/client"
+	"github.com/chzyer/readline"
 )
 
 func main() {
-	// 1. 连接服务端
 	serverAddr := "127.0.0.1:8080"
 	c, err := client.NewClient(serverAddr)
 	if err != nil {
@@ -21,27 +19,27 @@ func main() {
 	}
 	defer c.Close()
 
-	// 2. 打印欢迎语
 	printBanner(serverAddr)
 
-	// 3. 开启读取用户输入的循环 (REPL)
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		// 打印提示符
-		fmt.Print("Bitcask-IoT > ")
+	// 🌟 替换掉原来的 bufio.Scanner
+	rl, err := readline.New("Bitcask-IoT > ")
+	if err != nil {
+		panic(err)
+	}
+	defer rl.Close()
 
-		// 阻塞等待用户敲回车
-		if !scanner.Scan() {
-			break // 遇到 EOF (Ctrl+D) 退出
+	for {
+		// 阻塞等待用户输入，现在支持上下方向键和历史记录了！
+		line, err := rl.Readline()
+		if err != nil { // 包含 EOF (Ctrl+D) 或中断 (Ctrl+C)
+			break
 		}
 
-		// 获取输入并去除首尾空格
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		// 切割命令: "put temp 25.5" -> ["put", "temp", "25.5"]
 		parts := strings.Fields(line)
 		cmd := strings.ToLower(parts[0])
 
