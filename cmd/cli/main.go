@@ -48,6 +48,8 @@ func main() {
 			handleWrite(c, parts)
 		case "get", "query":
 			handleQuery(c, parts)
+		case "keys":
+			handleKeys(c)
 		case "exit", "quit":
 			fmt.Println("👋 Bye!")
 			return
@@ -62,6 +64,25 @@ func main() {
 // ==========================================
 // 🎮 具体的命令处理逻辑
 // ==========================================
+
+// handleKeys 处理获取所有 Key: keys
+func handleKeys(c *client.Client) {
+	keys, err := c.Keys()
+	if err != nil {
+		fmt.Printf("❌ 获取 Key 失败: %v\n", err)
+		return
+	}
+
+	fmt.Printf("📊 所有传感器 (共 %d 个):\n", len(keys))
+	fmt.Println("------------------------------------------------")
+	if len(keys) == 0 {
+		fmt.Println("   (无数据)")
+	}
+	for i, k := range keys {
+		fmt.Printf("%d. %s\n", i+1, k)
+	}
+	fmt.Println("------------------------------------------------")
+}
 
 // handleWrite 处理写入: put <key> <value> [timestamp]
 func handleWrite(c *client.Client, parts []string) {
@@ -169,7 +190,12 @@ func printBanner(addr string) {
 /_____/_/\__/\___/\__,_/____/_/|_|   
 IOT TSDB CLI v1.0
 Connected to ` + addr)
-	printHelp()
+
+	// 提示语
+	fmt.Println("Type 'help' to see available commands.")
+
+	// 👇 就是这一行，直接打印横线
+	fmt.Println("---------------------------------------")
 }
 
 func printHelp() {
@@ -190,7 +216,10 @@ func printHelp() {
   4. 查询指定范围:
      get <sensor_id> <start_ts> <end_ts>
 
-  5. 退出:
+  5. 查看所有传感器:
+     keys
+
+  6. 退出:
      exit / quit
 ---------------------------------------`)
 }

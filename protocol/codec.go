@@ -2,9 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
-	"math"
 )
 
 // ==========================================
@@ -14,6 +12,7 @@ const (
 	// 客户端 -> 服务端
 	TypeWrite uint8 = 1 // 写入数据
 	TypeQuery uint8 = 2 // 读取数据
+	TypeKeys  byte  = 3 // 获取全部 key
 
 	// 服务端 -> 客户端
 	TypeReply uint8 = 3 // 正常响应 (带数据或仅代表成功)
@@ -95,75 +94,38 @@ func Decode(r io.Reader) (*Packet, error) {
 	return p, nil
 }
 
-// ==========================================
-// 3. 二进制编解码工具函数
-// ==========================================
-
-// EncodePoint 将时序数据点编码为 16 字节的二进制格式
-// 格式: [Timestamp: 8 bytes BigEndian][Value: 8 bytes BigEndian IEEE754]
-func EncodePoint(timestamp int64, value float64) []byte {
-	buf := make([]byte, 16)
-	binary.BigEndian.PutUint64(buf[0:8], uint64(timestamp))
-	binary.BigEndian.PutUint64(buf[8:16], math.Float64bits(value))
-	return buf
-}
-
-// DecodePoint 从 16 字节的二进制格式解码出时序数据点
-func DecodePoint(buf []byte) (timestamp int64, value float64, err error) {
-	if len(buf) != 16 {
-		return 0, 0, fmt.Errorf("invalid point size: expected 16 bytes, got %d", len(buf))
+// EncodeKeys 将多个 Key 编码为二进制格式
+// 格式: [Key1Len: 4 bytes][Key1][Key2Len: 4 bytes][Key2]...
+func EncodeKeys(keys []string) []byte {
+	var size int
+	for _, k := range keys {
+		size += 4 + len(k)
 	}
-	timestamp = int64(binary.BigEndian.Uint64(buf[0:8]))
-	value = math.Float64frombits(binary.BigEndian.Uint64(buf[8:16]))
-	return timestamp, value, nil
-}
-
-// EncodeQueryRange 将查询范围编码为 16 字节的二进制格式
-// 格式: [Start: 8 bytes BigEndian][End: 8 bytes BigEndian]
-func EncodeQueryRange(start, end int64) []byte {
-	buf := make([]byte, 16)
-	binary.BigEndian.PutUint64(buf[0:8], uint64(start))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(end))
-	return buf
-}
-
-// DecodeQueryRange 从 16 字节的二进制格式解码出查询范围
-func DecodeQueryRange(buf []byte) (start, end int64, err error) {
-	if len(buf) != 16 {
-		return 0, 0, fmt.Errorf("invalid range size: expected 16 bytes, got %d", len(buf))
-	}
-	start = int64(binary.BigEndian.Uint64(buf[0:8]))
-	end = int64(binary.BigEndian.Uint64(buf[8:16]))
-	return start, end, nil
-}
-
-// Point 是时序数据点的协议层定义
-type Point struct {
-	Time  int64
-	Value float64
-}
-
-// EncodePoints 将多个时序数据点编码为连续的二进制格式
-// 格式: [Point1: 16 bytes][Point2: 16 bytes]...
-func EncodePoints(points []Point) []byte {
-	buf := make([]byte, len(points)*16)
-	for i, p := range points {
-		binary.BigEndian.PutUint64(buf[i*16:i*16+8], uint64(p.Time))
-		binary.BigEndian.PutUint64(buf[i*16+8:i*16+16], math.Float64bits(p.Value))
+	buf := make([]byte, size)
+	offset := 0
+	for _, k := range keys {
+		binary.BigEndian.PutUint32(buf[offset:offset+4], uint32(len(k)))
+		copy(buf[offset+4:], k)
+		offset += 4 + len(k)
 	}
 	return buf
 }
 
-// DecodePoints 从连续的二进制格式解码出多个时序数据点
-func DecodePoints(buf []byte) ([]Point, error) {
-	if len(buf)%16 != 0 {
-		return nil, fmt.Errorf("invalid points buffer size: must be multiple of 16, got %d", len(buf))
+// DecodeKeys 从二进制格式解码出多个 Key
+func DecodeKeys(buf []byte) ([]string, error) {
+	var keys []string
+	offset := 0
+	for offset < len(buf) {
+		if offset+4 > len(buf) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		keyLen := int(binary.BigEndian.Uint32(buf[offset : offset+4]))
+		offset += 4
+		if offset+keyLen > len(buf) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		keys = append(keys, string(buf[offset:offset+keyLen]))
+		offset += keyLen
 	}
-	points := make([]Point, len(buf)/16)
-	for i := 0; i < len(buf); i += 16 {
-		timestamp := int64(binary.BigEndian.Uint64(buf[i : i+8]))
-		value := math.Float64frombits(binary.BigEndian.Uint64(buf[i+8 : i+16]))
-		points[i/16] = Point{Time: timestamp, Value: value}
-	}
-	return points, nil
+	return keys, nil
 }

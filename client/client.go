@@ -13,6 +13,11 @@ type Client struct {
 	conn net.Conn
 }
 
+type Point struct {
+	Time  int64
+	Value float64
+}
+
 func NewClient(addr string) (*Client, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -54,7 +59,7 @@ func (c *Client) Write(sensorID string, timestamp int64, value float64) error {
 }
 
 // Query 🌟 替换原来的 Get，支持时间范围扫描
-func (c *Client) Query(sensorID string, start, end int64) ([]protocol.Point, error) {
+func (c *Client) Query(sensorID string, start, end int64) ([]Point, error) {
 	valBuf := make([]byte, 16)
 	binary.BigEndian.PutUint64(valBuf[0:8], uint64(start))
 	binary.BigEndian.PutUint64(valBuf[8:16], uint64(end))
@@ -77,13 +82,36 @@ func (c *Client) Query(sensorID string, start, end int64) ([]protocol.Point, err
 		return nil, fmt.Errorf("服务端报错: %s", string(resp.Value))
 	}
 
-	// 拆解服务端返回的一大坨二进制，还原成 []protocol.Point
-	var points []protocol.Point
+	// 拆解服务端返回的一大坨纯二进制，还原成 Client 层的 []Point
+	var points []Point // 🌟 摆脱对 protocol.Point 的依赖
 	for i := 0; i < len(resp.Value); i += 16 {
 		t := int64(binary.BigEndian.Uint64(resp.Value[i : i+8]))
 		v := math.Float64frombits(binary.BigEndian.Uint64(resp.Value[i+8 : i+16]))
-		points = append(points, protocol.Point{Time: t, Value: v})
+
+		// 🌟 组装成本包内部的 Point
+		points = append(points, Point{Time: t, Value: v})
 	}
 
 	return points, nil
+}
+
+// Keys 🌟 获取服务端所有 Key
+func (c *Client) Keys() ([]string, error) {
+	req := &protocol.Packet{
+		Type: protocol.TypeKeys,
+	}
+
+	if _, err := c.conn.Write(protocol.Encode(req)); err != nil {
+		return nil, err
+	}
+
+	resp, err := protocol.Decode(c.conn)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Type == protocol.TypeError {
+		return nil, fmt.Errorf("服务端报错: %s", string(resp.Value))
+	}
+
+	return protocol.DecodeKeys(resp.Value)
 }

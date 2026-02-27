@@ -18,7 +18,7 @@ func NewIndex() *Index {
 
 // GetOrCreateSeries 是对外暴露的核心方法
 // 逻辑：有就直接返回，没有就创建新的
-func (idx *Index) GetOrCreateSeries(name string) *Series {
+func (idx *Index) getOrCreateSeries(name string) *Series {
 	// 1. 【快速路径】：先用读锁查一下有没有
 	// 99.9% 的请求都会走这里，性能极高
 	idx.mu.RLock()
@@ -51,7 +51,7 @@ func (idx *Index) GetOrCreateSeries(name string) *Series {
 
 // GetAllSeries 获取所有 Series 的快照列表
 // 场景：供 Engine 的后台 Ticker 巡检使用
-func (idx *Index) GetAllSeries() []*Series {
+func (idx *Index) getAllSeries() []*Series {
 	// 1. 加读锁 (RLock)
 	// 我们只读 map，不修改 map 结构，所以用 RLock，允许其他协程并发读取
 	idx.mu.RLock()
@@ -72,4 +72,16 @@ func (idx *Index) GetAllSeries() []*Series {
 	// 锁在这里释放。Engine 拿到 list 后，可以在锁外慢慢遍历，
 	// 此时如果有新设备注册（idx.series 写入），完全不受影响。
 	return list
+}
+
+// GetAllKeys 获取所有 SensorID (Key) 的列表
+func (idx *Index) getAllKeys() []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	keys := make([]string, 0, len(idx.seriesMap))
+	for k := range idx.seriesMap {
+		keys = append(keys, k)
+	}
+	return keys
 }

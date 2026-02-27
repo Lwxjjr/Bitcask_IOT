@@ -57,7 +57,7 @@ func (db *DB) Write(sensorID string, timestamp int64, value float64) error {
 	}
 
 	// 2. 获取或创建 Series (内存中的专属通道)
-	series := db.idx.GetOrCreateSeries(sensorID)
+	series := db.idx.getOrCreateSeries(sensorID)
 
 	// 3. 尝试追加到内存 Buffer
 	// ⚡️ 核心黑科技：如果 Buffer 满了，Series 会"窃取"满的那部分数据并返回给我们
@@ -75,7 +75,7 @@ func (db *DB) Write(sensorID string, timestamp int64, value float64) error {
 // 也就是 "取"：查出一段时间内的所有点
 func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 	// 1. 找设备
-	series := db.idx.GetOrCreateSeries(sensorID)
+	series := db.idx.getOrCreateSeries(sensorID)
 	if series == nil {
 		return nil, nil // 没这个设备，直接返回空
 	}
@@ -113,7 +113,12 @@ func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 	return result, nil
 }
 
-// Close 🔴 4. 关闭数据库
+// Keys 🔑 4. 获取所有 SensorID
+func (db *DB) Keys() []string {
+	return db.idx.getAllKeys()
+}
+
+// Close 🔴 5. 关闭数据库
 // 安全退出，防止数据丢失
 func (db *DB) Close() error {
 	// 1. 通知后台协程停手
@@ -175,7 +180,7 @@ func (db *DB) startWorker() {
 
 // checkForceFlush 巡检所有 Series，看谁的数据太久没刷盘
 func (db *DB) checkForceFlush() {
-	allSeries := db.idx.GetAllSeries()
+	allSeries := db.idx.getAllSeries()
 	for _, series := range allSeries {
 		// Series 内部会判断：如果数据存在且超过 60秒 未刷盘，就返回数据
 		if points := series.CheckForTicker(); len(points) > 0 {

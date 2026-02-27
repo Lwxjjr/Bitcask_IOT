@@ -63,6 +63,11 @@ func HandleConnection(conn net.Conn, db *core.DB) {
 				}
 			}
 
+		case protocol.TypeKeys: // 🌟 获取全部 Key
+			keys := db.Keys()
+			respVal := protocol.EncodeKeys(keys)
+			respPacket = &protocol.Packet{Type: protocol.TypeReply, Value: respVal}
+
 		default:
 			respPacket = &protocol.Packet{Type: protocol.TypeError, Value: []byte("unknown command")}
 		}
