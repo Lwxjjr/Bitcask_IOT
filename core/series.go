@@ -33,8 +33,8 @@ func newSeries(id uint32) *Series {
 // ✍️ 写入路径 (Write Path)
 // ==========================================
 
-// Append 追加数据。如果达到阈值，会"窃取"并返回数据供调用方落盘。
-func (s *Series) Append(point Point) []Point {
+// append 追加数据。如果达到阈值，会"窃取"并返回数据供调用方落盘。
+func (s *Series) append(point Point) []Point {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -47,8 +47,8 @@ func (s *Series) Append(point Point) []Point {
 	return nil // 没满，返回 nil，外部无需执行写盘
 }
 
-// CheckForTicker 供后台 Ticker 调用，检查是否因为超时需要强制刷盘
-func (s *Series) CheckForTicker() []Point {
+// checkForTicker 供后台 Ticker 调用，检查是否因为超时需要强制刷盘
+func (s *Series) checkForTicker() []Point {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,8 +71,8 @@ func (s *Series) stealLocked() []Point {
 	return dataToSteal
 }
 
-// AddBlockMeta 数据成功落盘后，由外部调用此方法将元数据登记造册
-func (s *Series) AddBlockMeta(meta *BlockMeta) {
+// addBlockMeta 数据成功落盘后，由外部调用此方法将元数据登记造册
+func (s *Series) addBlockMeta(meta *BlockMeta) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blocks = append(s.blocks, meta)
@@ -82,8 +82,8 @@ func (s *Series) AddBlockMeta(meta *BlockMeta) {
 // 🔍 查询路径 (Query Path)
 // ==========================================
 
-// GetHotData 获取尚未落盘的热数据（安全拷贝）
-func (s *Series) GetHotData() []Point {
+// getHotData 获取尚未落盘的热数据（安全拷贝）
+func (s *Series) getHotData() []Point {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -93,8 +93,8 @@ func (s *Series) GetHotData() []Point {
 	return result
 }
 
-// FindBlocks 查询冷数据索引：找出在指定时间范围内的所有 Block
-func (s *Series) FindBlocks(start, end int64) []*BlockMeta {
+// findBlocks 查询冷数据索引：找出在指定时间范围内的所有 Block
+func (s *Series) findBlocks(start, end int64) []*BlockMeta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

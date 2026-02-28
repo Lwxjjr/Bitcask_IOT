@@ -13,7 +13,7 @@ const (
 )
 
 // GetSegmentPath 根据目录和 ID 生成完整的段文件路径
-func GetSegmentPath(dir string, id uint32) string {
+func getSegmentPath(dir string, id uint32) string {
 	return filepath.Join(dir, fmt.Sprintf("%s%06d%s", SegmentFileNamePrefix, id, SegmentFileNameSuffix))
 }
 
@@ -27,7 +27,7 @@ type Segment struct {
 }
 
 // NewSegment 打开或创建一个 Segment 文件
-func NewSegment(path string, id uint32) (*Segment, error) {
+func newSegment(path string, id uint32) (*Segment, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func NewSegment(path string, id uint32) (*Segment, error) {
 
 // Write 极其纯粹的物理写入！只认字节流，不管业务逻辑
 // 返回写入的起始 Offset
-func (s *Segment) Write(data []byte) (int64, error) {
+func (s *Segment) write(data []byte) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (s *Segment) Write(data []byte) (int64, error) {
 }
 
 // ReadAt 提供极其纯粹的物理读取
-func (s *Segment) ReadAt(size uint32, offset int64) ([]byte, error) {
+func (s *Segment) readAt(size uint32, offset int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -76,7 +76,7 @@ func (s *Segment) ReadAt(size uint32, offset int64) ([]byte, error) {
 }
 
 // Size 获取当前文件的大小（线程安全），用于 Manager 判断轮转
-func (s *Segment) Size() int64 {
+func (s *Segment) size() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.WriteOffset
@@ -90,7 +90,7 @@ func (s *Segment) Sync() error {
 }
 
 // Close 关闭文件
-func (s *Segment) Close() error {
+func (s *Segment) close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.File.Close()

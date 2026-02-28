@@ -21,7 +21,7 @@ type DB struct {
 func NewDB(dirPath string) (*DB, error) {
 	// 1. 初始化存储层 (肌肉)
 	// 会自动扫描目录，加载活跃的 Segment
-	mgr, err := NewManager(dirPath, 0)
+	mgr, err := newManager(dirPath, 0)
 	if err != nil {
 		return nil, fmt.Errorf("storage init failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func (db *DB) Write(sensorID string, timestamp int64, value float64) error {
 
 	// 3. 尝试追加到内存 Buffer
 	// ⚡️ 核心黑科技：如果 Buffer 满了，Series 会"窃取"满的那部分数据并返回给我们
-	pointsToFlush := series.Append(point)
+	pointsToFlush := series.append(point)
 
 	// 4. 如果发生了窃取，说明需要落盘了
 	if len(pointsToFlush) > 0 {
@@ -84,11 +84,11 @@ func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 
 	// 2. 查磁盘 (冷数据 Cold Data)
 	// 从 Series 里拿出符合时间范围的"藏宝图坐标" (BlockMeta)
-	blockMetas := series.FindBlocks(start, end)
+	blockMetas := series.findBlocks(start, end)
 
 	for _, meta := range blockMetas {
 		// 拿着坐标去问 Storage 要物理数据
-		block, err := db.manager.ReadBlock(meta)
+		block, err := db.manager.readBlock(meta)
 		if err != nil {
 			return nil, fmt.Errorf("read block failed: %v", err)
 		}
@@ -103,7 +103,7 @@ func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 
 	// 3. 查内存 (热数据 Hot Data)
 	// 获取还没来得及落盘的数据
-	hotData := series.GetHotData()
+	hotData := series.getHotData()
 	for _, p := range hotData {
 		if p.Time >= start && p.Time <= end {
 			result = append(result, p)
@@ -112,6 +112,7 @@ func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 
 	return result, nil
 }
+
 
 // Keys 🔑 4. 获取所有 SensorID
 func (db *DB) Keys() []string {
@@ -128,7 +129,7 @@ func (db *DB) Close() error {
 	// 2. (可选) 这里可以遍历所有 Series 执行一次强制 ForceFlush，确保内存不丢数据
 
 	// 3. 关闭底层文件句柄
-	return db.manager.Close()
+	return db.manager.close()
 }
 
 // ==========================================
@@ -143,14 +144,14 @@ func (db *DB) flushSeriesData(series *Series, points []Point) error {
 
 	// 2. 写磁盘
 	// 这一步会发生：序列化 -> 压缩 -> 写文件 -> 可能触发文件切分(Rotate)
-	meta, err := db.manager.WriteBlock(block)
+	meta, err := db.manager.writeBlock(block)
 	if err != nil {
 		return err
 	}
 
 	// 3. 拿回执
 	// 把存储层返回的 BlockMeta (文件偏移量等) 挂回 Series 的索引链表上
-	series.AddBlockMeta(meta)
+	series.addBlockMeta(meta)
 
 	return nil
 }
@@ -183,7 +184,7 @@ func (db *DB) checkForceFlush() {
 	allSeries := db.idx.getAllSeries()
 	for _, series := range allSeries {
 		// Series 内部会判断：如果数据存在且超过 60秒 未刷盘，就返回数据
-		if points := series.CheckForTicker(); len(points) > 0 {
+		if points := series.checkForTicker(); len(points) > 0 {
 			// 复用核心刷盘逻辑
 			if err := db.flushSeriesData(series, points); err != nil {
 				fmt.Printf("Error flushing series %d: %v\n", series.ID, err)
