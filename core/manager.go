@@ -46,7 +46,7 @@ func newManager(dirPath string, maxSize int64) (*Manager, error) {
 	return mgr, nil
 }
 
-// loadSegments 扫描目录并加载已有的文件 (逻辑保持不变)
+// loadSegments 扫描目录并加载已有的文件
 func (m *Manager) loadSegments() error {
 	files, err := os.ReadDir(m.dirPath)
 	if err != nil {
@@ -55,6 +55,7 @@ func (m *Manager) loadSegments() error {
 
 	var ids []uint32
 	for _, f := range files {
+		// 🌟 巧妙之处：只认 .vlog 文件来提取 ID 即可
 		if strings.HasPrefix(f.Name(), SegmentFileNamePrefix) && strings.HasSuffix(f.Name(), SegmentFileNameSuffix) {
 			idStr := strings.TrimPrefix(strings.TrimSuffix(f.Name(), SegmentFileNameSuffix), SegmentFileNamePrefix)
 			id, err := strconv.ParseUint(idStr, 10, 32)
@@ -65,23 +66,25 @@ func (m *Manager) loadSegments() error {
 	}
 
 	if len(ids) == 0 {
-		return m.rotate(0)
+		return m.rotate(0) // 如果没有任何文件，开创 0 号纪元
 	}
 
+	// 排序保证老文件在前
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
 	for i := 0; i < len(ids)-1; i++ {
-		path := getSegmentPath(m.dirPath, ids[i])
-		seg, err := newSegment(path, ids[i])
+		// 🛠️ 修改：直接传目录给 newSegment，它会自动搞定 vlog 和 hint
+		seg, err := newSegment(m.dirPath, ids[i])
 		if err != nil {
 			return err
 		}
 		m.olderSegments[ids[i]] = seg
 	}
 
+	// 处理最新的活跃 Segment
 	lastID := ids[len(ids)-1]
-	path := getSegmentPath(m.dirPath, lastID)
-	seg, err := newSegment(path, lastID)
+	// 🛠️ 修改：直接传目录
+	seg, err := newSegment(m.dirPath, lastID)
 	if err != nil {
 		return err
 	}
@@ -126,7 +129,14 @@ func (m *Manager) writeBlock(block *Block) (*BlockMeta, error) {
 	}
 
 	// 5. 🧾 组装元数据返回给上层
-	return block.toMeta(activeSeg.ID, offset, uint32(dataSize)), nil
+	meta := block.toMeta(activeSeg.ID, offset, uint32(dataSize))
+
+	if err := WriteHintRecord(activeSeg.HintFile, block.SensorID, meta); err != nil {
+		// 这里只打印错误不 return，因为真实数据已经落盘了，避免上层收到假报错
+		// logger.Errorf("写入 Hint 伴生文件失败: %v", err)
+	}
+
+	return meta, nil
 }
 
 // ReadBlock 根据 FileID 找到对应的 Segment 并读取解包
@@ -158,14 +168,16 @@ func (m *Manager) readBlock(meta *BlockMeta) (*Block, error) {
 func (m *Manager) rotate(nextID uint32) error {
 	if m.activeSegment != nil {
 		// 🌟 关键保命动作：退役前必须强制刷盘！
+		// 这里得益于我们之前的改造，它会自动把旧的 .vlog 和 .hint 一起安全刷盘
 		if err := m.activeSegment.Sync(); err != nil {
 			return fmt.Errorf("failed to sync segment %d: %v", m.activeSegment.ID, err)
 		}
 		m.olderSegments[m.activeSegment.ID] = m.activeSegment
 	}
 
-	path := getSegmentPath(m.dirPath, nextID)
-	seg, err := newSegment(path, nextID)
+	// 🛠️ 核心修改：不再单独拼装 path，直接把 m.dirPath 交给 newSegment！
+	// 让 newSegment 自己在里面把 .vlog 和 .hint 安排得明明白白
+	seg, err := newSegment(m.dirPath, nextID)
 	if err != nil {
 		return err
 	}

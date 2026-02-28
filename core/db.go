@@ -2,6 +2,10 @@ package core
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -19,16 +23,20 @@ type DB struct {
 // NewDB 🟢 1. 启动数据库
 // dirPath: 数据存储目录 (会自动创建/加载 .vlog 文件)
 func NewDB(dirPath string) (*DB, error) {
-	// 1. 初始化存储层 (肌肉)
-	// 会自动扫描目录，加载活跃的 Segment
-	mgr, err := newManager(dirPath, 0)
-	if err != nil {
-		return nil, fmt.Errorf("storage init failed: %v", err)
-	}
-
-	// 2. 初始化索引层 (大脑)
-	// 目前是空的，重启后需要逻辑重建 (未来可加入 HintFile 恢复)
+	mgr, _ := newManager(dirPath, 0)
 	idx := NewIndex()
+
+	// 🌟 1. 打开字典文件，并挂载到 Index 上，准备接收未来的新设备注册
+	catalogPath := filepath.Join(dirPath, "catalog.idx")
+	catalogFd, _ := os.OpenFile(catalogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	idx.catalogFd = catalogFd
+
+	// 🌟 2. 【开机第一步】：扫描 catalog.idx，恢复内存字典和 nextID 最大值！
+	loadCatalog(catalogFd, idx)
+
+	// 🌟 3. 【开机第二步】：扫描所有 .hint 文件。
+	// 此时读出来的 Hint 只有 uint32，但你的大脑已经可以通过 idx.idToName 认识它们了！
+	loadHintsFromDir(dirPath, idx)
 
 	db := &DB{
 		manager: mgr,
@@ -36,11 +44,100 @@ func NewDB(dirPath string) (*DB, error) {
 		stopCh:  make(chan struct{}),
 	}
 
-	// 3. 启动后台打更人 (Ticker)
 	// 负责定期把长时间未写入的数据强制刷盘
 	db.startWorker()
 
 	return db, nil
+}
+
+// ➕ 补全极其简单的加载字典逻辑
+func loadCatalog(file *os.File, idx *Index) {
+	file.Seek(0, io.SeekStart) // 确保从头开始读
+	maxID := uint32(0)
+
+	for {
+		id, name, err := DecodeCatalog(file)
+		if err != nil {
+			break // 读到 EOF 跳出
+		}
+
+		// 恢复正向和反向映射
+		idx.seriesMap[name] = newSeries(id)
+		idx.idToName[id] = name
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	// 恢复自增 ID 的起点，防止重启后 ID 重复覆盖旧数据！
+	if maxID > 0 {
+		idx.nextID = maxID + 1
+	}
+}
+
+// loadHintsFromDir 扫描数据目录，按字典序加载所有伴生索引文件
+func loadHintsFromDir(dirPath string, idx *Index) error {
+	pattern := filepath.Join(dirPath, "*.hint")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return err
+	}
+
+	if len(files) == 0 {
+		return nil // 没有 Hint 文件，直接放行
+	}
+
+	// 必须按时间字典序排列！保证内存里的 Meta 块是单调递增的
+	sort.Strings(files)
+
+	for _, file := range files {
+		if err := processSingleHintFile(file, idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// processSingleHintFile 适配了全新的 uint32 定长解析！
+func processSingleHintFile(filePath string, idx *Index) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for {
+		// 🌟 1. 极速解析：瞬间切下 38 字节，拿到的是 uint32 类型的 sensorID！
+		sensorID, meta, err := DecodeHint(f)
+		if err != nil {
+			if err == io.EOF {
+				break // 完美读完
+			}
+			return fmt.Errorf("Hint文件 %s 损坏: %v", filePath, err)
+		}
+
+		// 🌟 2. 核心联动：靠第一步读出来的 Catalog 字典，把 uint32 翻译回名字！
+		idx.mu.RLock()
+		name, ok := idx.idToName[sensorID]
+		idx.mu.RUnlock()
+
+		if !ok {
+			// 极端容错防线：如果 Hint 里有数据，但字典里找不到对应的名字
+			// 说明这批数据成了“孤儿”，直接跳过，防止引发恐慌 (Panic)
+			// fmt.Printf("⚠️ 警告：发现孤儿区块，未知 SensorID: %d\n", sensorID)
+			continue
+		}
+
+		// 🌟 3. 获取对应的设备 (因为前面 loadCatalog 已经把它放进内存了，这里绝对能拿到)
+		s := idx.getOrCreateSeries(name)
+
+		// 🌟 4. 把藏宝图挂载到设备的肚子里
+		s.mu.Lock()
+		s.blocks = append(s.blocks, meta)
+		s.mu.Unlock()
+	}
+
+	return nil
 }
 
 // ==========================================
@@ -112,7 +209,6 @@ func (db *DB) Query(sensorID string, start, end int64) ([]Point, error) {
 
 	return result, nil
 }
-
 
 // Keys 🔑 4. 获取所有 SensorID
 func (db *DB) Keys() []string {

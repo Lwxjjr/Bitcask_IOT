@@ -1,17 +1,25 @@
 package core
 
-import "sync"
+import (
+	"encoding/binary"
+	"os"
+	"sync"
+)
 
 type Index struct {
 	mu sync.RWMutex
 	// 核心映射表：SensorName (string) -> Series对象 (指针)
 	seriesMap map[string]*Series
+	idToName  map[uint32]string // 反向映射，开机的时候有用
 	nextID    uint32
+	// ➕ 新增：字典日志文件句柄
+	catalogFd *os.File
 }
 
 func NewIndex() *Index {
 	return &Index{
 		seriesMap: make(map[string]*Series),
+		idToName:  make(map[uint32]string),
 		nextID:    1,
 	}
 }
@@ -28,25 +36,46 @@ func (idx *Index) getOrCreateSeries(name string) *Series {
 		return s
 	}
 
-	// 2. 【慢速路径】：没找到，说明是新设备，准备注册
-	// 加写锁，互斥
+	// 2. 【慢速路径】：没找到，准备注册
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Double Check: 防止刚才那一瞬间别的线程已经创建了
 	if s, ok = idx.seriesMap[name]; ok {
 		return s
 	}
 
-	// 3. 创建新 Series
-	// 分配 ID -> 创建对象 -> 存入 Map
+	// 3. 分配 ID
 	id := idx.nextID
-	idx.nextID++ // 计数器自增
+	idx.nextID++
 
+	// 🌟 4. 【核心新增】：立刻把 "ID -> Name" 追加到字典文件中！
+	// 格式极其简单：[ID: 4字节] + [Name长度: 2字节] + [Name内容]
+	if err := idx.appendCatalog(id, name); err != nil {
+		// 记录严重错误，注册失败！
+	}
+
+	// 5. 创建新 Series 并存入 Map
 	newSeries := newSeries(id)
 	idx.seriesMap[name] = newSeries
+	idx.idToName[id] = name // 顺手记下反向映射
 
 	return newSeries
+}
+
+// 追加写字典文件
+func (idx *Index) appendCatalog(id uint32, name string) error {
+	if idx.catalogFd == nil {
+		return nil // 防御性逻辑
+	}
+
+	nameLen := len(name)
+	buf := make([]byte, 4+2+nameLen)
+	binary.BigEndian.PutUint32(buf[0:4], id)
+	binary.BigEndian.PutUint16(buf[4:6], uint16(nameLen))
+	copy(buf[6:], name)
+
+	_, err := idx.catalogFd.Write(buf)
+	return err
 }
 
 // GetAllSeries 获取所有 Series 的快照列表
